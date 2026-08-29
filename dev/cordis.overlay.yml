@@ -1,0 +1,31 @@
+# Local development overlay: run from the deepseek-harness source checkout
+# with this plugin loaded straight from the built lib and a demo SQLite db.
+#
+#   cd /Users/wang.yang/Codes/Github/deepseek-harness
+#   pnpm dsh web --patch /Users/wang.yang/ZCodeProject/rd-data-agent/dev/cordis.overlay.yml
+#
+# The row references the BUILT entry (node scripts/build.mjs first). Node
+# module resolution walks up from lib/index.js, so @deepseek-ai/* externals
+# resolve through rd-data-agent/node_modules (scripts/link-dsh.mjs).
+
+- insert:
+    - id: rd-data-analysis
+      name: '/Users/wang.yang/ZCodeProject/rd-data-agent/lib/index.js'
+      config:
+        dataSources:
+          - name: demo
+            type: sqlite
+            file: '/Users/wang.yang/ZCodeProject/rd-data-agent/demo/demo.db'
+            approvalMode: auto
+          - name: spark-lake
+            type: spark
+            approvalMode: auto
+          # MySQL example — credentials via env, never inline:
+          # - name: prod-mysql
+          #   type: mysql
+          #   host: 10.0.0.5
+          #   port: 3306
+          #   database: shop
+          #   user: analytics_ro
+          #   password: !!js process.env.MYSQL_ANALYTICS_PASSWORD
+          #   approvalMode: ask

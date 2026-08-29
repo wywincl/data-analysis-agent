@@ -1,0 +1,426 @@
+/**
+ * Model-facing tools for the RD Data Analysis plugin.
+ *
+ * Workflow the system prompt teaches: list_data_sources → inspect_schema →
+ * run_sql → render_chart / analyze_data. All SQL passes the read-only guard
+ * (see sql/guard.ts); chart option JSON is built host-side, never authored by
+ * the model.
+ *
+ * @module dsh-research/tools
+ */
+
+import type { Context } from '@deepseek-ai/cordis'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { ValueSchemaSpec } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-session'
+import { limitsFor, type Config } from '../config.ts'
+import type { DataSourceRegistry } from '../registry.ts'
+import type { DataSourceProvider, RdChartType, RdSeriesInput } from '../types.ts'
+import type { SemanticLayer } from '../semantic/layer.ts'
+import { guardSelectOnly, GuardError } from '../sql/guard.ts'
+import { buildEchartsOption, optionDataPoints } from '../charts/echarts-option.ts'
+import { correlation, distribution, profile, topn, type AnalysisContext, type AnalysisKind } from '../analysis/analyze.ts'
+import { textTable } from './text.ts'
+
+/** Lossless object schema for every canonical tool result (official pattern). */
+function objectSchema() {
+  return { type: 'object', additionalProperties: true } satisfies ValueSchemaSpec
+}
+
+function requireProvider(registry: DataSourceRegistry, datasource: string): DataSourceProvider {
+  const provider = registry.get(datasource)
+  if (provider === undefined) {
+    const available = registry.list().map((entry) => entry.name).join(', ') || '(none configured)'
+    throw new GuardError(`Unknown datasource "${datasource}". Configured: ${available}.`)
+  }
+  return provider
+}
+
+/** Register every tool; returns nothing (registrations are effects on ctx). */
+export function registerTools(ctx: Context, config: Config, registry: DataSourceRegistry, semantic: SemanticLayer): void {
+  const { modelRowCap } = config
+
+  ctx.tools.register(defineTool({
+    name: 'list_data_sources',
+    description:
+      'List the configured data sources (SQLite / MySQL / PostgreSQL / Spark) with engine, dialect, '
+      + 'and approval mode. Call this first when unsure which sources exist.',
+    parameters: {},
+    output: {
+      schema: objectSchema(),
+      render: (_args, value) => [{
+        type: 'text',
+        text: (value as { dataSources: { name: string, type: string, dialect: string, mock: boolean, approvalMode: string }[] })
+          .dataSources
+          .map((entry) => `- ${entry.name} · ${entry.type} (${entry.dialect})${entry.mock ? ' · MOCK' : ''} · approval: ${entry.approvalMode}`)
+          .join('\n') || '(no data sources configured)',
+      }],
+    },
+    async execute() {
+      const configured = new Map(config.dataSources.map((ds) => [ds.name, ds]))
+      return {
+        dataSources: registry.list().map((entry) => ({
+          ...entry,
+          approvalMode: configured.get(entry.name)?.approvalMode ?? 'auto',
+        })),
+      } as unknown as Record<string, JsonValue>
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'inspect_schema',
+    description:
+      'Inspect a data source\'s schema: tables/views, columns with types and comments, row estimates, '
+      + 'and optional sample rows. Read this BEFORE writing SQL. Schema is cached briefly; pass refresh '
+      + 'to re-introspect after suspected DDL changes.',
+    parameters: {
+      datasource: { type: 'string', required: true, description: 'Data source name from list_data_sources.' },
+      table: { type: 'string', description: 'Optional single table to detail (otherwise all tables are summarized).' },
+      includeSamples: { type: 'boolean', description: 'Include up to 5 sample rows per table (slower).' },
+      refresh: { type: 'boolean', description: 'Bypass the schema cache.' },
+    },
+    output: {
+      schema: objectSchema(),
+      render: (_args, value) => {
+        const result = value as {
+          datasource: string, tableCount: number, truncated: boolean,
+          tables: { name: string, type: string, rowCountEstimate?: number, columns: string }[],
+          sample?: Record<string, JsonValue>[]
+        }
+        const head = `Schema of "${result.datasource}" — ${result.tableCount} tables${result.truncated ? ' (truncated)' : ''}:`
+        const body = result.tables.map((table) =>
+          `- ${table.name} [${table.type}]${table.rowCountEstimate !== undefined ? ` ~${table.rowCountEstimate} rows` : ''}\n    ${table.columns}`,
+        ).join('\n')
+        const sample = result.sample !== undefined ? `\nSamples:\n${textTable(Object.keys(result.sample[0] ?? {}), result.sample, 5)}` : ''
+        return [{ type: 'text', text: `${head}\n${body}${sample}` }]
+      },
+    },
+    async execute(args) {
+      const provider = requireProvider(registry, args.datasource)
+      const schema = await registry.schema(args.datasource, {
+        includeSamples: args.includeSamples === true,
+        refresh: args.refresh === true,
+        signal: undefined,
+      })
+      // 语义层标注叠加:表/列的业务含义来自 semantic.yaml(meaning 层)。
+      const annotate = (table: string): { tableLabel?: string, tableDescription?: string, columnMeta: Map<string, { label?: string, description?: string, unit?: string }> } => {
+        const entity = semantic.entityFor(table)
+        if (entity === undefined) return { columnMeta: new Map() }
+        const columnMeta = new Map<string, { label?: string, description?: string, unit?: string }>()
+        for (const column of entity.columns ?? []) columnMeta.set(column.name, column)
+        return { ...(entity.label !== undefined ? { tableLabel: entity.label } : {}), ...(entity.description !== undefined ? { tableDescription: entity.description } : {}), columnMeta }
+      }
+      if (args.table !== undefined) {
+        const table = schema.tables.find((entry) => entry.name.toLowerCase() === args.table!.toLowerCase())
+        if (table === undefined) {
+          throw new GuardError(`Table "${args.table}" not found in "${args.datasource}". Known: ${schema.tables.map((t) => t.name).join(', ')}`)
+        }
+        const { tableLabel, tableDescription, columnMeta } = annotate(table.name)
+        return {
+          datasource: schema.datasource,
+          dialect: schema.dialect,
+          tableCount: 1,
+          truncated: false,
+          tables: [{
+            name: table.name,
+            type: table.type,
+            ...(tableLabel !== undefined ? { label: tableLabel } : {}),
+            ...(tableDescription !== undefined ? { description: tableDescription } : {}),
+            ...(table.rowCountEstimate !== undefined ? { rowCountEstimate: table.rowCountEstimate } : {}),
+            columns: table.columns.map((column) => {
+              const meta = columnMeta.get(column.name)
+              return `${column.name} ${column.dataType}${column.nullable === false ? ' NOT NULL' : ''}${meta?.label !== undefined ? ` -- ${meta.label}` : column.comment ? ` -- ${column.comment}` : ''}${meta?.description !== undefined ? ` (${meta.description})` : ''}${meta?.unit !== undefined ? ` [${meta.unit}]` : ''}`
+            }).join(', '),
+          }],
+          ...(table.samples !== undefined && table.samples.length > 0 ? { sample: table.samples } : {}),
+        } as unknown as Record<string, JsonValue>
+      }
+      const maxTables = 200
+      return {
+        datasource: schema.datasource,
+        dialect: schema.dialect,
+        tableCount: schema.tables.length,
+        truncated: schema.tables.length > maxTables,
+        tables: schema.tables.slice(0, maxTables).map((table) => {
+          const { tableLabel, tableDescription, columnMeta } = annotate(table.name)
+          return {
+            name: table.name,
+            type: table.type,
+            ...(tableLabel !== undefined ? { label: tableLabel } : {}),
+            ...(tableDescription !== undefined ? { description: tableDescription } : {}),
+            ...(table.rowCountEstimate !== undefined ? { rowCountEstimate: table.rowCountEstimate } : {}),
+            ...(table.comment !== undefined && tableLabel === undefined ? { comment: table.comment } : {}),
+            columns: table.columns.map((column) => {
+              const meta = columnMeta.get(column.name)
+              return `${column.name} ${column.dataType}${meta?.label !== undefined ? ` -- ${meta.label}` : column.comment ? ` -- ${column.comment}` : ''}${meta?.description !== undefined ? ` (${meta.description})` : ''}`
+            }).join(', '),
+          }
+        }),
+      } as unknown as Record<string, JsonValue>
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'run_sql',
+    description:
+      'Execute ONE read-only SELECT against a data source (text2SQL: you write the SQL). Guardrails: '
+      + 'single SELECT/WITH statement only, LIMIT auto-injected when missing, per-source row cap and '
+      + 'timeout enforced. Returns a resultId you can pass to render_chart without re-sending rows. '
+      + 'Always inspect_schema first; state your intent in "reason" (shown on the approval card).',
+    parameters: {
+      datasource: { type: 'string', required: true, description: 'Data source name.' },
+      sql: { type: 'string', required: true, description: 'A single SELECT statement (dialect: see inspect_schema output).' },
+      reason: { type: 'string', required: true, description: 'One sentence: what this query answers. Shown to the approver and in the audit trail.' },
+      maxRows: { type: 'number', description: 'Row cap for this query (default: datasource setting).' },
+    },
+    output: {
+      schema: objectSchema(),
+      render: (_args, value) => {
+        const result = value as {
+          datasource: string, sql: string, rowCount: number, rows: Record<string, JsonValue>[],
+          columns: { name: string }[], truncated: boolean, resultId: string
+        }
+        const note = result.truncated
+          ? `\nNote: the result filled the row cap — there may be more rows. Aggregate in SQL or refine filters for totals instead of paging.`
+          : ''
+        return [{
+          type: 'text',
+          text: `Query OK on "${result.datasource}" — ${result.rowCount} rows, columns: ${result.columns.map((col) => col.name).join(', ')}.${note}\n`
+            + `resultId: ${result.resultId}  ← pass THIS value to render_chart to chart the full result\n`
+            + textTable(result.columns.map((col) => col.name), result.rows),
+        }]
+      },
+    },
+    presentCall: (args) => ({
+      card: 'generic' as const,
+      title: `SQL · ${args.datasource}`,
+      kind: 'other' as const,
+      rawInput: { datasource: args.datasource, reason: args.reason, sql: args.sql },
+    }),
+    async execute(args, exec) {
+      const provider = requireProvider(registry, args.datasource)
+      const configured = config.dataSources.find((ds) => ds.name === args.datasource)
+      const { timeoutMs, maxRows: sourceMaxRows } = limitsFor(config, configured)
+      const maxRows = Math.min(Math.max(args.maxRows ?? sourceMaxRows, 1), 10_000)
+      const guarded = guardSelectOnly(args.sql, provider.dialect, maxRows)
+      const result = await provider.query(guarded.sql, {
+        timeoutMs,
+        maxRows,
+        signal: exec.signal,
+      })
+      const resultId = crypto.randomUUID()
+      registry.putResult({
+        resultId,
+        datasource: provider.name,
+        dialect: provider.dialect,
+        sql: guarded.sql,
+        columns: result.columns,
+        rows: result.rows,
+        rowCount: result.rowCount,
+        truncated: result.truncated,
+      })
+      return {
+        resultId,
+        datasource: provider.name,
+        sql: guarded.sql,
+        tablesTouched: guarded.tables,
+        reason: args.reason,
+        columns: result.columns,
+        rows: result.rows.slice(0, modelRowCap),
+        rowCount: result.rowCount,
+        modelRowsShown: Math.min(result.rows.length, modelRowCap),
+        truncated: result.truncated,
+      } as unknown as Record<string, JsonValue>
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'render_chart',
+    description:
+      'Render an interactive ECharts visualization INSIDE the chat and enable HTML/PNG/CSV export. '
+      + 'Three data sources, in order of preference: (1) resultId from the last run_sql — charts the '
+      + 'FULL result even when only a preview was shown to you; (2) sql — a single SELECT executed '
+      + 'freshly under the same guardrails; (3) inline data rows for values not from a query. '
+      + 'Chart option JSON is built by the platform — you only declare intent: chartType, fields, title.',
+    parameters: {
+      datasource: { type: 'string', required: true, description: 'Data source name (provenance).' },
+      title: { type: 'string', required: true, description: 'Human chart title (Chinese when the user writes Chinese).' },
+      chartType: {
+        type: 'string', required: true, enum: ['line', 'bar', 'pie', 'scatter', 'heatmap', 'kpi'],
+        description: 'line/bar: category x + numeric series; pie: nameField+valueField; scatter: numeric x/y; heatmap: x+y category + value; kpi: single value.',
+      },
+      xField: { type: 'string', description: 'Category axis field (line/bar/heatmap) or x field (scatter).' },
+      yFields: { type: 'array', items: { type: 'string' }, description: 'Value series fields for line/bar/scatter (each becomes a legend series).' },
+      nameField: { type: 'string', description: 'pie: field carrying slice names.' },
+      valueField: { type: 'string', description: 'pie: slice values; kpi: the single numeric field.' },
+      unit: { type: 'string', description: 'kpi: display unit, e.g. "%", "元".' },
+      sql: { type: 'string', description: 'A single SELECT executed fresh (when no resultId). Guardrails apply.' },
+      resultId: { type: 'string', description: 'resultId from run_sql — rows come from the cached full result (preferred).' },
+      data: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'Inline rows (use when charting values not from run_sql).' },
+    },
+    output: {
+      schema: objectSchema(),
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Chart rendered in the conversation (chartId ${(value as { chartId: string }).chartId}, ${(value as { points: number }).points} points). `
+          + 'The user sees an interactive chart with HTML/PNG/CSV export buttons.',
+      }],
+      // presentationMeta persists the chart payload on the durable tool/result
+      // event; the browser Conversation Node renders from it on replay. Pure
+      // function of (args, canonical value) per the tool cookbook.
+      presentationMeta: (_args, value): JsonValue => {
+        const chart = (value as { chart?: Record<string, JsonValue> }).chart
+        if (chart === undefined) return {}
+        return { rdChart: chart }
+      },
+    },
+    presentCall: (args) => ({
+      card: 'generic' as const,
+      title: `图表 · ${args.title}`,
+      kind: 'other' as const,
+      rawInput: { datasource: args.datasource, chartType: args.chartType, title: args.title },
+    }),
+    async execute(args, exec) {
+      let rows: readonly Record<string, JsonValue>[] = []
+      let columns: { name: string, type: string }[] = []
+      let sql = args.sql
+      if (typeof args.resultId === 'string') {
+        const cached = registry.getResult(args.resultId)
+        if (cached === undefined) {
+          throw new GuardError(`resultId "${args.resultId}" expired or unknown — re-run run_sql, or pass sql / inline data instead.`)
+        }
+        rows = cached.rows as readonly Record<string, JsonValue>[]
+        columns = cached.columns.map((col) => ({ ...col }))
+        sql = sql ?? cached.sql
+      } else if (typeof args.sql === 'string' && args.sql.trim() !== '') {
+        // One-shot chart-from-SQL: same guard + caps as run_sql.
+        const provider = requireProvider(registry, args.datasource)
+        const configured = config.dataSources.find((ds) => ds.name === args.datasource)
+        const guarded = guardSelectOnly(args.sql, provider.dialect, config.chartDataCap)
+        const result = await provider.query(guarded.sql, {
+          timeoutMs: configured?.timeoutMs ?? config.defaultTimeoutMs,
+          maxRows: config.chartDataCap,
+          signal: exec.signal,
+        })
+        rows = result.rows as readonly Record<string, JsonValue>[]
+        columns = result.columns.map((col) => ({ ...col }))
+        sql = guarded.sql
+      } else if (Array.isArray(args.data)) {
+        rows = args.data
+        columns = rows.length > 0 ? Object.keys(rows[0]).map((name) => ({ name, type: 'unknown' })) : []
+      } else {
+        throw new GuardError('Provide resultId (from run_sql), a sql SELECT, or inline data rows.')
+      }
+      const capped = rows.slice(0, config.chartDataCap)
+      const series: RdSeriesInput[] = Array.isArray(args.yFields)
+        ? (args.yFields as string[]).map((field) => ({ field }))
+        : []
+      const option = buildEchartsOption({
+        chartType: args.chartType as RdChartType,
+        title: args.title,
+        data: capped,
+        ...(args.xField !== undefined ? { xField: args.xField } : {}),
+        ...(series.length > 0 ? { series } : {}),
+        ...(args.nameField !== undefined ? { nameField: args.nameField } : {}),
+        ...(args.valueField !== undefined ? { valueField: args.valueField } : {}),
+        ...(args.unit !== undefined ? { unit: args.unit } : {}),
+      })
+      const event = {
+        chartId: crypto.randomUUID(),
+        title: args.title,
+        datasource: args.datasource,
+        ...(sql !== undefined ? { sql } : {}),
+        chartType: args.chartType as RdChartType,
+        echartsOption: option,
+        data: capped,
+        columns,
+        createdAt: new Date().toISOString(),
+      } as const
+      // The payload reaches the browser through the durable `tool/result`
+      // meta (output.presentationMeta below) — no custom session event type,
+      // so session logs stay readable by any harness build.
+      return {
+        chartId: event.chartId,
+        chartType: event.chartType,
+        points: optionDataPoints(option),
+        rendered: true,
+        chart: event,
+      } as unknown as Record<string, JsonValue>
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'analyze_data',
+    description:
+      'Run a built-in statistical analysis over a base SELECT: profile (per-column stats), topn '
+      + '(group-by top N), correlation (Pearson between two numeric columns), distribution (histogram). '
+      + 'Pass the base SQL; derived queries are generated and executed for you.',
+    parameters: {
+      datasource: { type: 'string', required: true, description: 'Data source name.' },
+      analysis: { type: 'string', required: true, enum: ['profile', 'topn', 'correlation', 'distribution'], description: 'Analysis kind.' },
+      sql: { type: 'string', required: true, description: 'Base SELECT (guardrails apply as in run_sql).' },
+      column: { type: 'string', description: 'correlation: first column; distribution: the column.' },
+      column2: { type: 'string', description: 'correlation: second column.' },
+      dimension: { type: 'string', description: 'topn: group-by column.' },
+      metric: { type: 'string', description: 'topn: aggregated column (omit for COUNT(*)).' },
+      aggregate: { type: 'string', enum: ['count', 'sum', 'avg', 'min', 'max'], description: 'topn: aggregation (default count / sum when metric given).' },
+      topN: { type: 'number', description: 'topn: how many groups (default 10, max 100).' },
+      buckets: { type: 'number', description: 'distribution: bin count (default 12, max 60).' },
+    },
+    output: {
+      schema: objectSchema(),
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Analysis "${(value as { analysis: string }).analysis}" complete — interpret the numbers below and state findings with evidence:\n${JSON.stringify(value, null, 2).slice(0, 6000)}`,
+      }],
+    },
+    presentCall: (args) => ({
+      card: 'generic' as const,
+      title: `分析 · ${args.analysis}`,
+      kind: 'other' as const,
+      rawInput: { datasource: args.datasource, analysis: args.analysis, sql: args.sql },
+    }),
+    async execute(args, exec) {
+      const provider = requireProvider(registry, args.datasource)
+      const configured = config.dataSources.find((ds) => ds.name === args.datasource)
+      const { timeoutMs } = limitsFor(config, configured)
+      const guarded = guardSelectOnly(args.sql, provider.dialect, limitsFor(config, configured).maxRows)
+      const ctx: AnalysisContext = {
+        dialect: provider.dialect,
+        run: (sql) => provider.query(sql, {
+          timeoutMs,
+          maxRows: 20_000,
+          signal: exec.signal,
+        }),
+      }
+      const kind = args.analysis as AnalysisKind
+      let result: Record<string, unknown>
+      if (kind === 'profile') {
+        result = await profile(ctx, guarded.sql)
+      } else if (kind === 'topn') {
+        if (args.dimension === undefined) throw new GuardError('topn requires "dimension".')
+        result = await topn(ctx, guarded.sql, {
+          dimension: args.dimension,
+          ...(args.metric !== undefined ? { metric: args.metric } : {}),
+          ...(args.aggregate !== undefined ? { aggregate: args.aggregate as 'count' | 'sum' | 'avg' | 'min' | 'max' } : {}),
+          ...(args.topN !== undefined ? { topN: args.topN } : {}),
+        })
+      } else if (kind === 'correlation') {
+        if (args.column === undefined || args.column2 === undefined) throw new GuardError('correlation requires "column" and "column2".')
+        result = await correlation(ctx, guarded.sql, { column: args.column, column2: args.column2 })
+      } else {
+        if (args.column === undefined) throw new GuardError('distribution requires "column".')
+        result = await distribution(ctx, guarded.sql, {
+          column: args.column,
+          ...(args.buckets !== undefined ? { buckets: args.buckets } : {}),
+        })
+      }
+      return {
+        analysis: kind,
+        datasource: provider.name,
+        baseSql: guarded.sql,
+        ...result,
+      } as unknown as Record<string, JsonValue>
+    },
+  }))
+}
