@@ -10,6 +10,8 @@
  */
 
 import type { JsonValue } from '@deepseek-ai/dsh-session'
+import { en, zh, type HostLocale } from '../i18n/host.ts'
+import { tpl } from '../i18n/index.ts'
 
 export interface ExportedChart {
   readonly title: string
@@ -32,7 +34,10 @@ function embedJson(value: unknown): string {
 }
 
 /** Build the standalone, offline-openable HTML for one or more charts. */
-export function renderStandaloneHtml(charts: readonly ExportedChart[], meta: { readonly title: string, readonly echartsUmd: string }): string {
+export function renderStandaloneHtml(charts: readonly ExportedChart[], meta: { readonly title: string, readonly echartsUmd: string, readonly locale?: HostLocale }): string {
+  const locale: HostLocale = meta.locale === 'en' ? 'en' : 'zh'
+  const s = locale === 'en' ? en : zh
+  const dateLocale = locale === 'en' ? 'en-US' : 'zh-CN'
   const payload = charts.map((chart) => ({
     title: chart.title,
     datasource: chart.datasource ?? '',
@@ -41,7 +46,7 @@ export function renderStandaloneHtml(charts: readonly ExportedChart[], meta: { r
     option: chart.echartsOption,
   }))
   return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="${locale === 'en' ? 'en' : 'zh-CN'}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -68,12 +73,13 @@ export function renderStandaloneHtml(charts: readonly ExportedChart[], meta: { r
 <body>
 <header>
   <h1>${escapeHtml(meta.title)}</h1>
-  <p>由 RD Data Analysis Agent 导出 · ${escapeHtml(new Date().toLocaleString('zh-CN'))} · ${charts.length} 个图表 · 离线可交互</p>
+  <p>${escapeHtml(tpl(s['export.html.byline'], { time: new Date().toLocaleString(dateLocale), count: charts.length }))}</p>
 </header>
 <main id="charts"></main>
-<footer>数据来源见各图「SQL」折叠区。本文件为自包含交互式页面，可直接在浏览器打开。</footer>
+<footer>${escapeHtml(s['export.html.footer'])}</footer>
 <script>${meta.echartsUmd}</script>
 <script>
+var RD_LOCALE = ${JSON.stringify(dateLocale)};
 var RD_CHARTS = ${embedJson(payload)};
 (function () {
   var host = document.getElementById('charts');
@@ -91,7 +97,7 @@ var RD_CHARTS = ${embedJson(payload)};
     if (chart.option && chart.option.kpi) {
       var stat = document.createElement('div');
       stat.className = 'kpi';
-      stat.innerHTML = Number(chart.option.kpi.value).toLocaleString('zh-CN') +
+      stat.innerHTML = Number(chart.option.kpi.value).toLocaleString(RD_LOCALE) +
         (chart.option.kpi.unit ? '<small>' + chart.option.kpi.unit + '</small>' : '');
       body.appendChild(stat);
     } else {

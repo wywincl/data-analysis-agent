@@ -1,0 +1,9 @@
+# 术语层(term):业务口径的统一说法,注入系统提示词。
+# aliases 让模型在听到别称时也能命中同一个口径;体检会检查别名是否与其它术语冲突。
+
+terms:
+  - name: GMV
+    aliases: [成交总额, 销售额]
+    description: 已支付订单的金额总和,口径 = SUM(orders.amount) WHERE status = 'paid'
+  - name: 有效订单
+    description: status = 'paid' 的订单,退款单不计入收入类指标

@@ -18,6 +18,7 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     exportDir: '',
     resultCacheSize: 50,
     resultCacheTtlMs: 30 * 60_000,
+    locale: 'zh',
     ...overrides,
   }
 }

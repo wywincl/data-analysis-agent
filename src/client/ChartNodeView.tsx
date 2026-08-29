@@ -11,20 +11,34 @@ import * as echarts from 'echarts'
 import type { ChatNodeViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { RdChartEvent } from '../events.ts'
 import { copyText, downloadChartCsv, downloadChartHtml, downloadChartPng } from './export-html.ts'
+import { en, zh, type ClientKey, type ClientLocale } from '../i18n/client.ts'
+import { HOST_TOKENS, rdVars } from './theme.ts'
+
+/**
+ * Infer the active locale from `t`'s output: the framework binds `t` to the
+ * host locale service (falling back to our config locale), and zh/en differ
+ * for every key, so one probe translation is enough to tell them apart.
+ */
+function localeOf(t: (key: ClientKey) => string): ClientLocale {
+  const probe = t('chart.exportHtml')
+  if (probe === en['chart.exportHtml']) return 'en'
+  if (probe === zh['chart.exportHtml']) return 'zh'
+  return 'zh'
+}
 
 /** Live ECharts instance handle for PNG export. */
 export interface ChartHandle {
   readonly getDataUrl: () => string
 }
 
-function KpiView({ event }: { event: RdChartEvent }): ReactNode {
+function KpiView({ event, t }: { event: RdChartEvent; t: (key: ClientKey) => string }): ReactNode {
   const kpi = event.echartsOption.kpi as { value?: number, unit?: string, name?: string } | undefined
   const value = typeof kpi?.value === 'number' ? kpi.value : null
   return (
     <div style={kpiStyle}>
       <div style={kpiName}>{event.title}</div>
       <div style={kpiValue}>
-        {value === null ? '—' : value.toLocaleString('zh-CN')}
+        {value === null ? '—' : value.toLocaleString(localeOf(t) === 'en' ? 'en-US' : 'zh-CN')}
         {kpi?.unit ? <span style={kpiUnit}> {kpi.unit}</span> : null}
       </div>
     </div>
@@ -32,7 +46,7 @@ function KpiView({ event }: { event: RdChartEvent }): ReactNode {
 }
 
 /** Main node view: chart canvas + toolbar + SQL provenance. */
-export function RdChartNodeView({ node }: ChatNodeViewProps<'rd-chart'>): ReactNode {
+export function RdChartNodeView({ node, t }: ChatNodeViewProps<'rd-chart'> & { t: (key: ClientKey) => string }): ReactNode {
   const event: RdChartEvent = node.data
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<echarts.ECharts | null>(null)
@@ -68,14 +82,14 @@ export function RdChartNodeView({ node }: ChatNodeViewProps<'rd-chart'>): ReactN
         <span style={timestamp}>{event.createdAt.replace('T', ' ').slice(0, 19)}</span>
       </div>
 
-      {isKpi ? <KpiView event={event} /> : <div ref={containerRef} style={chartBox} />}
+      {isKpi ? <KpiView event={event} t={t} /> : <div ref={containerRef} style={chartBox} />}
 
       <div style={toolbar}>
-        <button type="button" style={button} onClick={() => downloadChartHtml(event)}>导出 HTML</button>
+        <button type="button" style={button} onClick={() => downloadChartHtml(event, localeOf(t))}>{t('chart.exportHtml')}</button>
         {!isKpi && (
-          <button type="button" style={button} onClick={() => downloadChartPng(event, handle()?.getDataUrl)}>PNG</button>
+          <button type="button" style={button} onClick={() => downloadChartPng(event, handle()?.getDataUrl)}>{t('chart.png')}</button>
         )}
-        <button type="button" style={button} onClick={() => downloadChartCsv(event)}>CSV</button>
+        <button type="button" style={button} onClick={() => downloadChartCsv(event)}>{t('chart.csv')}</button>
         {event.sql !== undefined && (
           <button
             type="button"
@@ -87,14 +101,14 @@ export function RdChartNodeView({ node }: ChatNodeViewProps<'rd-chart'>): ReactN
               })
             }}
           >
-            {copied ? '已复制 ✓' : '复制 SQL'}
+            {copied ? t('chart.copied') : t('chart.copySql')}
           </button>
         )}
       </div>
 
       {event.sql !== undefined && (
         <details style={details}>
-          <summary style={summary}>SQL</summary>
+          <summary style={summary}>{t('chart.sql')}</summary>
           <pre style={sqlBox}>{event.sql}</pre>
         </details>
       )}
@@ -102,31 +116,36 @@ export function RdChartNodeView({ node }: ChatNodeViewProps<'rd-chart'>): ReactN
   )
 }
 
+// Chart nodes have no per-plugin theme override of their own: always follow
+// the host appearance via the `--dsw-alias-*` tokens (see theme.ts).
+const chartVars = rdVars(HOST_TOKENS)
+
 const root: React.CSSProperties = {
+  ...chartVars,
   display: 'flex', flexDirection: 'column', gap: 8,
-  border: '1px solid var(--dsw-border, #e5e7eb)', borderRadius: 12,
-  padding: '10px 14px', margin: '4px 0', background: 'var(--dsw-card-bg, transparent)',
-  maxWidth: 720,
+  border: '1px solid var(--rd-border)', borderRadius: 12,
+  padding: '10px 14px', margin: '4px 0', background: 'transparent',
+  color: 'var(--rd-text)', maxWidth: 720,
 }
 const headerRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8 }
 const datasourceChip: React.CSSProperties = {
-  fontSize: 11, color: 'var(--dsw-accent, #2f6feb)',
-  border: '1px solid var(--dsw-border, #e5e7eb)', borderRadius: 999, padding: '1px 8px',
+  fontSize: 11, color: 'var(--rd-accent)',
+  border: '1px solid var(--rd-border)', borderRadius: 999, padding: '1px 8px',
 }
-const timestamp: React.CSSProperties = { fontSize: 11, color: 'var(--dsw-muted, #6b7280)' }
+const timestamp: React.CSSProperties = { fontSize: 11, color: 'var(--rd-muted)' }
 const chartBox: React.CSSProperties = { width: '100%', height: 300 }
 const kpiStyle: React.CSSProperties = { padding: '18px 4px' }
-const kpiName: React.CSSProperties = { fontSize: 12, color: 'var(--dsw-muted, #6b7280)' }
-const kpiValue: React.CSSProperties = { fontSize: 36, fontWeight: 700, color: 'var(--dsw-accent, #2f6feb)' }
-const kpiUnit: React.CSSProperties = { fontSize: 14, fontWeight: 500, color: 'var(--dsw-muted, #6b7280)' }
+const kpiName: React.CSSProperties = { fontSize: 12, color: 'var(--rd-muted)' }
+const kpiValue: React.CSSProperties = { fontSize: 36, fontWeight: 700, color: 'var(--rd-accent)' }
+const kpiUnit: React.CSSProperties = { fontSize: 14, fontWeight: 500, color: 'var(--rd-muted)' }
 const toolbar: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 8 }
 const button: React.CSSProperties = {
-  border: '1px solid var(--dsw-border, #e5e7eb)', borderRadius: 999,
+  border: '1px solid var(--rd-border)', borderRadius: 999,
   background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 12, padding: '3px 12px',
 }
 const details: React.CSSProperties = { fontSize: 12 }
-const summary: React.CSSProperties = { cursor: 'pointer', color: 'var(--dsw-accent, #2f6feb)' }
+const summary: React.CSSProperties = { cursor: 'pointer', color: 'var(--rd-accent)' }
 const sqlBox: React.CSSProperties = {
-  background: 'var(--dsw-code-bg, #f3f4f6)', padding: 8, borderRadius: 6,
+  background: 'var(--rd-code-bg)', padding: 8, borderRadius: 6,
   whiteSpace: 'pre-wrap', overflowX: 'auto', margin: '4px 0 0',
 }

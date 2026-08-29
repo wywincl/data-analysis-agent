@@ -3,3 +3,6 @@ lib/
 *.db
 .zcode/
 demo/demo.db
+demo/*.db-wal
+demo/*.db-shm
+.workbuddy/

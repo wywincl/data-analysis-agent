@@ -142,13 +142,62 @@ export type LintCode =
   | 'unbounded-metric'
   | 'missing-label'
 
-/** One non-fatal problem found in an otherwise loadable semantic config. */
+/**
+ * One non-fatal problem found in an otherwise loadable semantic config.
+ *
+ * Issues carry **data, not prose**: `code` + `params` are resolved against the
+ * i18n dictionary by `formatLintIssue()` at render time. That keeps lint.ts
+ * locale-agnostic (it never sees `config`) and means switching the UI language
+ * takes effect immediately instead of needing a semantic reload.
+ */
 export interface LintIssue {
   severity: LintSeverity
   code: LintCode
   /** Where it came from, e.g. `demo/metrics.yaml: metrics[2].dimensions[0]`. */
   path: string
+  /** Values interpolated into the `lint.<code>.message` / `.hint` template. */
+  params: Readonly<Record<string, string | number>>
+}
+
+/** A lint issue with its message and hint rendered in one locale. */
+export interface LintIssueView {
+  severity: LintSeverity
+  code: LintCode
+  path: string
   message: string
-  /** Suggested fix, when there is an obvious one. */
   hint?: string
+}
+
+// ---------------------------------------------------------------------------
+// Workbench-facing summary (read-only preview + editor read-back)
+// ---------------------------------------------------------------------------
+
+/** Load state of the semantic layer, surfaced to the workbench card. */
+export type SemanticSummaryState = 'ok' | 'empty' | 'missing' | 'parse-error'
+
+/** One metric as shown in the workbench preview (no heavy fields). */
+export interface SemanticSummaryMetric {
+  name: string
+  label?: string
+  entity: string
+  agg: string
+  measure?: string
+  formula?: string
+}
+
+/** Compact catalog summary pushed to the workbench card for preview. */
+export interface SemanticSummary {
+  state: SemanticSummaryState
+  counts: { entities: number, metrics: number, terms: number }
+  metrics: SemanticSummaryMetric[]
+  entities: { table: string, label?: string }[]
+  terms: { name: string, description: string }[]
+  /** Lint findings, already rendered in the operator's locale. */
+  issues: LintIssueView[]
+  /** All files contributing to the current graph. */
+  files: readonly string[]
+  /** Resolved semantic file path (root). */
+  file?: string
+  /** Last load error, if the graph failed to load. */
+  error?: string
 }

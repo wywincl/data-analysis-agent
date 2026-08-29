@@ -13,12 +13,12 @@
 | 模块 | 核心能力 |
 |---|---|
 | **多数据源** | SQLite / MySQL / PostgreSQL / ClickHouse / Spark(v1 Mock)，统一 `DataSourceProvider` 接口，Schema 内省 + TTL 缓存 |
-| **语义层** | YAML 声明式 entities/terms/metrics，`fs.watch` + 防抖热加载，业务口径叠加进 `inspect_schema`，支持 `query_metric` 受治理 SQL 生成 |
+| **语义层** | YAML 声明式 entities/terms/metrics；`include` 多文件拆分 + `extends` / 默认继承复用，`fs.watch` + 防抖热加载（覆盖 include 全图），加载后语义体检（告警不阻塞），业务口径叠加进 `inspect_schema`，支持 `query_metric` 受治理 SQL 生成 |
 | **text2SQL** | `node-sql-parser` 解析级白名单（仅单条 SELECT/WITH），LIMIT 自动注入，语句级超时，行数硬上限，`approval` 审批门，`reason` 审计 |
 | **统计分析** | `profile`（逐列画像）/ `topn`（Top-N）/ `correlation`（Pearson 相关）/ `distribution`（直方图分箱） |
 | **可视化** | Apache ECharts 6，六种图型（line/bar/pie/scatter/heatmap/KPI），Host 侧构建完整 option，SVG 渲染，重启后持久化重放 |
 | **导出** | 单图自包含 HTML（离线交互）、PNG(2x)、CSV、`/data-dashboard` 仪表板、`/data-csv` 数据导出 |
-| **命令** | `/data-sources` `/data-test` `/data-schema` `/data-sql` `/data-dashboard` `/data-csv` `/data-reload` |
+| **命令** | `/data-sources` `/data-test` `/data-schema` `/data-sql` `/data-dashboard` `/data-csv` `/data-reload` `/data-semantic-lint` |
 | **安全** | `!!js process.env.*` 注入，密码 `role: 'secret'` 不回显，Web 工作台保存即热生效 |
 
 ---
@@ -102,33 +102,77 @@ DSH_HOME=~/.dsh-rd pnpm dsh --profile rd --port 3199 --no-open
 
 ### 语义层配置
 
-参考 `demo/semantic.yaml`：
+三类条目（参考 dsh-data-agent Catalog 的 meaning/term/metric 设计，落成声明式 YAML）：
+
+| 条目 | 作用 |
+|---|---|
+| `entities` | meaning：表/列的业务含义，叠加进 `inspect_schema` 的输出 |
+| `terms` | term：业务术语与别名，注入系统提示词统一口径 |
+| `metrics` | metric：可执行指标定义，`query_metric` 按此生成受治理的 SQL |
+
+完整示例见 `demo/semantic.yaml`（组合根）与 `demo/semantic/`（拆分后的实体/术语/指标文件）。
+
+#### 多文件拆分：`include`
+
+一个文件塞几十个指标会变得没法 review。根文件用 `include` 按域拆开：
+
+```yaml
+include:
+  - ./semantic/entities.yaml        # 具体路径
+  - ./semantic/metrics              # 目录简写（只取该层的 *.yaml）
+  - ./semantic/domains/**/*.yaml    # 递归 glob（* / ** / ? 均支持，零依赖实现）
+defaults:
+  datasource: demo
+```
+
+- **合并顺序**：被 include 的文件在前、include 它的文件在后，所以**后加载的覆盖先加载的**（同 `table` / 同 `name` 视为同一条目）。刻意覆盖共享 base 是合法用法，但同名冲突会记一条 `duplicate-definition` 告警，并点名被丢弃的那个文件。
+- **环安全**：`a → b → a` 不会死循环，每个文件只贡献一次。
+- **拼错即报错**：`include` 一个都匹配不到时直接加载失败（沿用上一次有效配置），而不是静默丢掉半个目录。
+- **热加载覆盖全图**：include 进来的每个文件及其所在目录都在监听范围内 —— 改任意一个文件会重载，glob 目录里新增文件同样会触发（文件级 watch 看不到新文件，所以目录也在监听集合里）。
+
+#### 复用：三层继承（defaults → entity → extends → metric）
 
 ```yaml
 defaults:
   datasource: demo
 entities:
-  - table: orders
-    label: 订单表
-    columns:
-      - { name: amount, label: 订单金额, unit: 元 }
-terms:
-  - name: GMV
-    aliases: [成交总额]
-    description: 已支付订单金额总和
+  - table: daily_revenue
+    timeField: dt          # 该实体下所有指标默认按 dt 看时间
+    dimensions: [tenant]
 metrics:
-  - name: daily_revenue
-    label: 每日收入
+  - name: paid_amount      # 基础口径：只统计已支付金额
     entity: orders
     measure: amount
     agg: sum
-    formula: SUM(amount) WHERE status = 'paid',按 created_at 分日
-    grain: 按天
+    filters: ["status = 'paid'"]
+  - name: daily_revenue
+    extends: paid_amount   # 只声明自己要改的字段
+    label: 每日收入
     timeField: created_at
     dimensions: [status, user_id]
-    filters: ["status = 'paid'"]
-    unit: 元
 ```
+
+- **标量字段**（`datasource` / `entity` / `measure` / `agg` / `timeField` / `dimensions` / `unit` / `label` …）：最近的声明生效，优先级为 `defaults` → `entity` → `extends` 链 → 指标自身。
+- **`filters` 是唯一例外：逐级累加（AND）**。子指标声明自己的过滤条件不会顶掉基础口径 —— 口径是约束，不该被"重写"掉。完全相同的谓词会去重。
+- `extends` 支持多层；链的根节点（没有 `extends` 的那一个）必须自己声明 `entity` 与 `agg`。`extends` 在组合阶段就被解析掉，下游（SQL 构建 / 指标目录 / 提示词）拿到的永远是自包含指标。
+
+#### 体检：`/data-semantic-lint`
+
+语法与结构错误会让加载直接失败（沿用上一次有效配置）；"能加载、但大概率是笔误"的语义问题记为**告警，不阻塞查询**，在 `list_semantic` 输出和 `/data-semantic-lint` 里可见：
+
+| code | 含义 |
+|---|---|
+| `duplicate-definition` | 同名 entity/term/metric 被覆盖，点名被丢弃的来源文件 |
+| `unknown-dimension-column` | 维度未在该 entity 的 `columns` 中声明（拼错会在 GROUP BY 时直接报错） |
+| `unknown-measure-column` / `unknown-timefield-column` | 度量列 / 时间列未声明 |
+| `duplicate-dimension` | 同一维度在 `dimensions` 里重复 |
+| `count-with-measure` | `agg: count` 却写了 `measure`（生成的是 `COUNT(*)`，该字段被忽略） |
+| `term-alias-collision` | 两个术语的名称/别名撞车，模型会选错口径 |
+| `metric-shadows-term` | 指标名与术语同名，提示词中出现歧义 |
+| `unbounded-metric` | 既无 `timeField` 也无 `filters`，查询会全表聚合 |
+| `missing-label` | 缺 `label` 的指标数（汇总成一条），模型只能看到 id |
+
+有意不做的一件事：**不检查 `filters` 里的列名**。它是刻意保留的自由 SQL 谓词（从 `status = 'paid'` 到 `dt >= date_sub(now(), interval 7 day)`），用正则去猜列名只会产出更多误报。
 
 ---
 
@@ -176,7 +220,7 @@ metrics:
 
 | 类别 | 覆盖内容 |
 |---|---|
-| **48 个单测/集成** | SQL guard 拒绝矩阵、LIMIT 注入、标识符注入、ECharts option 六图型、XSS 转义、CSV 转义、sqlite 端到端（执行/内省/四分析）、spark Mock、registry、语义层（YAML 校验拒绝矩阵/指标 SQL 构建/维度白名单/值转义/热加载容错/query_metric 端到端） |
+| **85 个单测/集成** | SQL guard 拒绝矩阵、LIMIT 注入、标识符注入、ECharts option 六图型、XSS 转义、CSV 转义、sqlite 端到端（执行/内省/四分析）、spark Mock、registry、语义层（YAML 校验拒绝矩阵/指标 SQL 构建/维度白名单/值转义/热加载容错/query_metric 端到端）、语义层组合（include 展开与 glob/环/覆盖、三层继承与 extends 链、filters 累加、lint 全规则、include 全图热加载、demo 配置端到端跑真实 SQL） |
 | **真机（浏览器）** | 插件加载 → 真实对话（模型按注入工作流调用 list_data_sources → inspect_schema → run_sql → analyze_data → render_chart）→ 双数据源图表节点渲染（SQLite 171 天折线 + Spark Mock 环形图）→ 导出 HTML 离线打开可交互 → `/data-dashboard` 仪表板 → 服务重启后历史会话完整重放图表 → 语义层对话流（list_semantic → query_metric · daily_revenue → render_chart）→ 工作台卡片改配置保存 → settings user layer 持久化 + host 热重建 |
 
 ---
@@ -200,6 +244,8 @@ rd-data-agent/
 ├── scripts/link-dsh.mjs              # dev:@deepseek-ai/* 符号链接到 dsh checkout
 ├── dev/cordis.overlay.yml            # 本地 --patch 联调 overlay（host-only）
 ├── demo/seed-demo.mjs                # 演示 SQLite 库
+├── demo/semantic.yaml                # 语义层示例（组合根：include + defaults）
+├── demo/semantic/                     # 拆分后的实体 / 术语 / 指标域文件
 ├── src/                              # host 半：config/registry/datasources/sql/schema/tools/commands/...
 ├── src/client/                       # browser 半：definition/ChartNodeView/export-html
 ├── src/shared/export-template.ts     # 两半共用的自包含 HTML 模板 + CSV

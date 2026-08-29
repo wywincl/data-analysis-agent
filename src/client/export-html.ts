@@ -8,6 +8,7 @@
  */
 
 import type { RdChartEvent } from '../events.ts'
+import type { ClientLocale } from '../i18n/client.ts'
 import { renderStandaloneHtml, toCsv } from '../shared/export-template.ts'
 import echartsUmd from 'echarts-umd-text'
 
@@ -27,8 +28,8 @@ function slug(text: string): string {
   return text.trim().replace(/[^\w\u4e00-\u9fa5-]+/g, '-').replace(/^-+|-+$/g, '') || 'chart'
 }
 
-/** Download the chart as a standalone interactive HTML page. */
-export function downloadChartHtml(event: RdChartEvent): void {
+/** Download the chart as a standalone interactive HTML page (locale drives the exported page's language and date format). */
+export function downloadChartHtml(event: RdChartEvent, locale: ClientLocale = 'zh'): void {
   const html = renderStandaloneHtml(
     [{
       title: event.title,
@@ -39,7 +40,7 @@ export function downloadChartHtml(event: RdChartEvent): void {
       data: event.data,
       columns: [...event.columns],
     }],
-    { title: event.title, echartsUmd },
+    { title: event.title, echartsUmd, locale },
   )
   downloadFile(`${slug(event.title)}.html`, new Blob([html], { type: 'text/html;charset=utf-8' }))
 }

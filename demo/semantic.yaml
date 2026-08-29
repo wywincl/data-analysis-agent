@@ -1,0 +1,7 @@
+include:
+  - ./semantic/entities.yaml
+  - ./semantic/terms.yaml
+  - ./semantic/metrics/*.yaml
+  - ./semantic.workbench.yaml
+defaults:
+  datasource: demo

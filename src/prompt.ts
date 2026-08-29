@@ -6,34 +6,41 @@
  */
 
 import type { Config } from './config.ts'
+import { zh, en, type HostLocale } from './i18n/host.ts'
+import { tpl } from './i18n/index.ts'
+
+function localeOf(config: Config): HostLocale {
+  return config.locale === 'en' ? 'en' : 'zh'
+}
 
 export function workflowSectionText(config: Config): string {
+  const locale = localeOf(config)
+  const s = locale === 'zh' ? zh : en
   const sources = config.dataSources.map((ds) => `- ${ds.name} (${ds.type}${ds.sparkMock === true ? ', mock' : ''})`).join('\n') || '- (none configured)'
   const defaultNote = config.defaultDatasource !== ''
-    ? `\nDefault datasource: **${config.defaultDatasource}** — when the user does not name a source, query "${config.defaultDatasource}".`
+    ? `\n${locale === 'zh' ? '默认数据源' : 'Default datasource'}: **${config.defaultDatasource}** — ${locale === 'zh' ? '用户未指明来源时，优先查询' : 'when the user does not name a source, query'} "${config.defaultDatasource}".`
     : ''
-  return `## Data analysis workflow
 
-You are connected to these data sources through the rd-data-analysis plugin:
-${sources}
-${defaultNote}
+  return tpl(s['workflow.title'], {}) + '\n\n' +
+    tpl(s['workflow.connectedTo'], { sources, defaultNote }) + '\n\n' +
+    s['workflow.discipline'] + '\n' +
+    '1. ' + s['workflow.step1'] + '\n' +
+    '2. ' + s['workflow.step2'] + '\n' +
+    '3. ' + s['workflow.step3'] + '\n' +
+    '4. ' + s['workflow.step4'] + '\n' +
+    '5. ' + s['workflow.step5'] + '\n' +
+    '6. ' + s['workflow.step6'] + '\n\n' +
+    s['workflow.qualityRules']
+}
 
-Follow this discipline for every data question:
-1. **list_data_sources** once when unsure what exists.
-2. **inspect_schema** before writing SQL. Never guess table or column names.
-3. **run_sql** with ONE read-only SELECT. Guardrails are non-negotiable and enforced for you:
-   single SELECT/WITH statement, no DML/DDL, LIMIT injected when missing, per-source row cap and timeout.
-   Always fill \`reason\` with the question the query answers (shown to approvers).
-4. **render_chart** whenever a result has shape (trend → line, comparison → bar, share → pie,
-   relationship → scatter, density → heatmap, single headline number → kpi). Prefer passing the
-   \`resultId\` from run_sql over re-sending rows. Charts render inside the conversation with
-   HTML/PNG/CSV export.
-5. **analyze_data** for statistics: profile / topn / correlation / distribution — instead of hand-rolling
-   the same SQL. Interpret the returned numbers in your answer.
-6. Answer with the numbers you actually queried, cite the SQL you ran, and flag truncation
-   (row caps) or mock datasources explicitly. If a query fails the guard, rewrite it as a
-   single SELECT — do not attempt to bypass the guardrails.
+export function semanticDigestPrefix(config: Config): string {
+  const locale = localeOf(config)
+  const s = locale === 'zh' ? zh : en
+  return tpl(s['semantic.digestPrefix'], { semanticFileHint: config.semanticFile !== '' ? config.semanticFile : (locale === 'zh' ? 'enable semanticFile in the workbench card' : 'enable semanticFile in the workbench card') })
+}
 
-Text2SQL quality rules: filter in SQL (not post-hoc), aggregate in SQL when possible, prefer
-explicit column lists over *, and use the dialect of the target source (see inspect_schema output).`
+export function semanticSectionTitle(config: Config): string {
+  const locale = localeOf(config)
+  const s = locale === 'zh' ? zh : en
+  return s['semantic.sectionTitle']
 }

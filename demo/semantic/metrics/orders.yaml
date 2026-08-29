@@ -1,0 +1,77 @@
+# 订单域指标(metric)。
+#
+# paid_amount 是这个域的"基础口径":只统计已支付订单的金额。其余指标用 extends 继承它,
+# 只声明自己要改的那一个字段,避免每个指标都抄一遍 entity / measure / agg / filters。
+#
+# 继承规则(优先级从低到高):defaults → entity → extends 链 → 指标自身
+#   · 标量字段(entity/measure/agg/timeField/dimensions/unit/…):最近的声明生效
+#   · filters:逐级累加(AND),子指标声明自己的过滤条件不会顶掉基础口径
+#
+# 拆文件按业务域走:新增一个域就加一个 metrics/<domain>.yaml,根目录的
+# include: ./semantic/metrics/*.yaml 会自动把它接进来。
+
+metrics:
+  # ---- 基础口径(供继承,一般不直接查询) ----
+  - name: paid_amount
+    label: 已支付金额(基础口径)
+    description: 订单域基础口径 —— 仅统计已支付订单的金额,供其它指标 extends
+    entity: orders
+    measure: amount
+    agg: sum
+    filters: ["status = 'paid'"]
+    unit: 元
+
+  # ---- 继承基础口径 ----
+  - name: gmv_total
+    extends: paid_amount
+    label: GMV 总额
+    description: 时间范围内已支付订单的金额总和(全区间单值 KPI,故不设 timeField)
+    formula: SUM(amount) WHERE status = 'paid'
+    grain: 全区间单值
+
+  - name: daily_revenue
+    extends: paid_amount
+    label: 每日收入
+    description: 每日已支付订单的金额合计
+    formula: "SUM(amount) WHERE status = 'paid',按 created_at 分日"
+    grain: 按天
+    timeField: created_at
+    dimensions: [status, user_id]
+
+  - name: avg_order_value
+    extends: paid_amount
+    label: 客单价
+    description: 已支付订单的平均金额(只把 agg 从 sum 换成 avg,口径与度量列不变)
+    agg: avg
+    grain: 按天
+    timeField: created_at
+    dimensions: [status]
+
+  - name: paying_users
+    extends: paid_amount
+    label: 每日支付用户数
+    description: 每日有已支付订单的去重用户数(换 measure + agg,filters 依然继承)
+    measure: user_id
+    agg: count_distinct
+    timeField: created_at
+    unit: 人
+
+  # ---- 不继承 paid 口径(全部状态都要算) ----
+  - name: daily_orders
+    label: 每日订单量
+    description: 每日订单笔数(含所有状态,因此不从 paid_amount 继承)
+    entity: orders
+    agg: count
+    grain: 按天
+    timeField: created_at
+    dimensions: [status]
+
+  # ---- 预聚合表:timeField 从 entity 继承(daily_revenue.timeField = dt) ----
+  - name: agg_daily_revenue
+    label: 每日收入(预聚合表)
+    description: 直接读预聚合表,避免扫订单明细;时间列继承自 entity,此处无需声明
+    entity: daily_revenue
+    measure: revenue
+    agg: sum
+    grain: 按天
+    unit: 元

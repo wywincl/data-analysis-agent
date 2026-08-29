@@ -4,10 +4,12 @@
  * A database workbench + data analysis agent platform: multi-datasource
  * connectivity (SQLite, MySQL, PostgreSQL, ClickHouse, Spark seam), text2SQL
  * with parse-level guardrails and per-source approval, a hot-reloadable
- * semantic layer (语义层: entities/terms/metrics), built-in statistical
- * analysis, in-chat interactive ECharts visualization, and self-contained
- * HTML/PNG/CSV chart export. Connections and the semantic file are editable
- * live from the Web settings card (工作台).
+ * semantic layer (语义层: entities/terms/metrics — composable across files
+ * via `include`, reusable via `extends` and level defaults, hot-reloaded over
+ * the whole include graph, health-checked after every load), built-in
+ * statistical analysis, in-chat interactive ECharts visualization, and
+ * self-contained HTML/PNG/CSV chart export. Connections and the semantic file
+ * are editable live from the Web settings card (工作台).
  *
  * The browser half (./client) registers the chart Conversation Node and the
  * workbench settings card.
@@ -25,22 +27,30 @@ import { createMysqlProvider } from './datasources/mysql.ts'
 import { createPostgresProvider } from './datasources/postgres.ts'
 import { createClickhouseProvider } from './datasources/clickhouse.ts'
 import { createSparkMockProvider } from './datasources/spark.ts'
+import { probeProvider } from './datasources/probe.ts'
+import type { HealthStatus } from './health.ts'
 import { SemanticLayer } from './semantic/layer.ts'
 import { registerSemanticTools } from './semantic/tools.ts'
 import { registerTools } from './tools/index.ts'
 import { registerCommands } from './commands.ts'
 import { registerApprovalGate } from './approval.ts'
-import { workflowSectionText } from './prompt.ts'
+import { workflowSectionText, semanticDigestPrefix, semanticSectionTitle } from './prompt.ts'
 
 export { PLUGIN_NAME } from './config.ts'
 export type { RdChartEvent } from './events.ts'
 export type { DataSourceProvider, QueryResult, SchemaInfo } from './types.ts'
-export type { SemanticConfig, SemanticMetric, SemanticEntity, SemanticTerm } from './semantic/types.ts'
+export type { SemanticConfig, SemanticMetric, SemanticEntity, SemanticTerm, SemanticDefaults, LintIssue, LintCode } from './semantic/types.ts'
+export { lintSemanticConfig } from './semantic/lint.ts'
+import { buildSemanticSummary } from './semantic/summary.ts'
+import { scaffoldFromIntrospection } from './semantic/scaffold.ts'
+import { configToYaml, ensureWorkbenchInclude, workbenchPathFor, writeSemanticFile } from './semantic/serialize.ts'
+import type { HostLocale } from './i18n/host.ts'
+import type { SemanticConfig } from './semantic/types.ts'
 
 /** Cordis plugin name. */
 export const name = PLUGIN_NAME
-/** Required services: tool registry, command registry, system prompt. */
-export const inject = ['tools', 'commands', 'systemPrompt']
+/** Required services: tool registry, command registry, system prompt, settings store. */
+export const inject = ['tools', 'commands', 'systemPrompt', 'settings']
 
 export { Config }
 
@@ -96,7 +106,7 @@ export function apply(ctx: Context, config: ConfigType): void {
     config.resultCacheTtlMs,
     config.resultCacheSize,
   )
-  const semantic = new SemanticLayer(config.semanticFile === '' ? undefined : config.semanticFile)
+  const semantic = new SemanticLayer(config.semanticFile === '' ? undefined : config.semanticFile, () => { pushSemanticSummary() })
   ctx.effect(() => () => {
     void registry.close()
     semantic.dispose()
@@ -104,6 +114,119 @@ export function apply(ctx: Context, config: ConfigType): void {
 
   /** (Re)mount providers from the live config; close the previous set. */
   let wired: import('./types.ts').DataSourceProvider[] = []
+  /** Last `testRequest.nonce` the plugin has already consumed (loop guard). */
+  let lastProbeNonce = 0
+  /** Whether the settings namespace is live — gates auto-probes (avoid early throws). */
+  let settingsReady = false
+  /** Whether the initial connection + semantic seed has been pushed (runs once the namespace registers). */
+  let seeded = false
+  /** Last `scaffoldRequest.nonce` the plugin has already consumed (loop guard). */
+  let lastScaffoldNonce = 0
+  /** Last serialized `semanticWorkbench` echoed back — guards the round-trip. */
+  let lastWorkbenchJson = JSON.stringify(config.semanticWorkbench ?? null)
+
+  /** Build and push the read-only semantic preview to the card. */
+  function pushSemanticSummary(): void {
+    if (!settingsReady) return
+    const locale: HostLocale = config.locale === 'en' ? 'en' : 'zh'
+    const summary = buildSemanticSummary(semantic, locale)
+    try { ctx.settings.update(SETTINGS_NS, { semanticSummary: summary }) } catch { /* surface already logged */ }
+  }
+
+  /** Resolve a live provider for a datasource (reuse wired, else build temp). */
+  const getProviderFor = async (name: string): Promise<import('./types.ts').DataSourceProvider | undefined> => {
+    const existing = registry.get(name)
+    if (existing !== undefined) return existing
+    const ds = config.dataSources.find((d) => d.name === name)
+    if (ds === undefined) return undefined
+    try { return createProvider(ds) } catch { return undefined }
+  }
+
+  /**
+   * Persist authored semantic content to the dedicated workbench file and
+   * rewire the layer. Non-destructive: writes its own file and (when a root
+   * exists) appends an include rather than touching operator files.
+   */
+  const persistWorkbench = (content: SemanticConfig): void => {
+    const wbPath = workbenchPathFor(config.semanticFile, process.cwd())
+    let rootChanged = false
+    try {
+      writeSemanticFile(wbPath, configToYaml(content))
+      if (config.semanticFile !== '') {
+        ensureWorkbenchInclude(config.semanticFile, wbPath)
+      } else {
+        config.semanticFile = wbPath
+        rootChanged = true
+      }
+    } catch (error) {
+      ctx.logger?.error?.(error)
+      return
+    }
+    semantic.reconfigure(config.semanticFile === '' ? undefined : config.semanticFile)
+    config.semanticWorkbench = content
+    lastWorkbenchJson = JSON.stringify(content)
+    if (settingsReady) {
+      try {
+        ctx.settings.update(SETTINGS_NS, {
+          ...(rootChanged ? { semanticFile: wbPath } : {}),
+          semanticWorkbench: content,
+        })
+      } catch { /* ignore */ }
+    }
+    pushSemanticSummary()
+  }
+
+  /** Introspect a datasource and scaffold a starter workbench config. */
+  const runScaffold = async (datasource: string): Promise<void> => {
+    const provider = await getProviderFor(datasource)
+    if (provider === undefined) {
+      ctx.logger?.error?.(`scaffold: datasource "${datasource}" is not available`)
+      return
+    }
+    try {
+      const schema = await provider.introspect()
+      const content = scaffoldFromIntrospection(schema, datasource)
+      persistWorkbench(content)
+    } catch (error) {
+      ctx.logger?.error?.(error)
+    }
+  }
+
+  /**
+   * Probe one or more datasources and push the results into the `health` map.
+   * Uses the already-wired provider when present; otherwise builds a temporary
+   * one from the saved config (and closes it). A single settings write carries
+   * the whole map, so watchers settle once.
+   */
+  const probeNames = async (names: string[]): Promise<void> => {
+    const next: Record<string, HealthStatus> = { ...(config.health ?? {}) }
+    for (const name of names) {
+      const ds = config.dataSources.find((d) => d.name === name)
+      if (ds === undefined) {
+        next[name] = { online: false, message: 'not configured (save the connection first)', at: Date.now() }
+        continue
+      }
+      const existing = registry.get(name)
+      let provider = existing
+      let temporary = false
+      if (provider === undefined) {
+        try {
+          provider = createProvider(ds)
+          temporary = true
+        } catch (buildError) {
+          next[name] = { online: false, message: buildError instanceof Error ? buildError.message : String(buildError), at: Date.now() }
+          continue
+        }
+      }
+      next[name] = await probeProvider(provider, config.defaultTimeoutMs)
+      if (temporary) await provider.close().catch(() => { /* best-effort close */ })
+    }
+    config.health = next
+    if (settingsReady) {
+      try { await ctx.settings.update(SETTINGS_NS, { health: next }) } catch { /* surface already logged via health */ }
+    }
+  }
+
   const wireDataSources = (): void => {
     const active = new Set(config.dataSources.map((ds) => ds.name))
     for (const provider of wired) {
@@ -120,6 +243,8 @@ export function apply(ctx: Context, config: ConfigType): void {
         ctx.logger?.error?.(error)
       }
     }
+    // Auto-probe the freshly wired connections so the card shows live status.
+    if (settingsReady) void probeNames(wired.map((p) => p.name))
   }
   wireDataSources()
 
@@ -155,8 +280,51 @@ export function apply(ctx: Context, config: ConfigType): void {
         }),
       }
       Object.assign(config, merged)
+      // Consume a one-shot connectivity test request (card → host). A new nonce
+      // fires exactly one probe; the resulting health write re-enters onChange
+      // with the SAME nonce, so it terminates after a single extra settle.
+      const probeReq = merged.testRequest
+      if (probeReq !== null && probeReq !== undefined && typeof probeReq.nonce === 'number' && probeReq.nonce !== lastProbeNonce) {
+        lastProbeNonce = probeReq.nonce
+        if (config.dataSources.some((ds) => ds.name === probeReq.name)) {
+          void probeNames([probeReq.name])
+        }
+      }
       if (connectionsChanged) wireDataSources()
       if (semanticChanged) semantic.reconfigure(config.semanticFile === '' ? undefined : config.semanticFile)
+
+      // Consume a one-shot semantic scaffold request (card → host). A new nonce
+      // fires exactly one scaffold; the resulting workbench write re-enters
+      // onChange with the SAME nonce, so it terminates after a single settle.
+      const scaffoldReq = merged.scaffoldRequest
+      if (scaffoldReq !== null && scaffoldReq !== undefined && typeof scaffoldReq.nonce === 'number' && scaffoldReq.nonce !== lastScaffoldNonce) {
+        lastScaffoldNonce = scaffoldReq.nonce
+        if (config.dataSources.some((ds) => ds.name === scaffoldReq.datasource)) {
+          void runScaffold(scaffoldReq.datasource)
+        }
+      }
+
+      // Consume workbench authoring (card → host). Guarded against the echo we
+      // push back so it runs exactly once per save and then settles.
+      const wbJson = JSON.stringify(merged.semanticWorkbench ?? null)
+      if (wbJson !== lastWorkbenchJson) {
+        lastWorkbenchJson = wbJson
+        if (merged.semanticWorkbench !== undefined && merged.semanticWorkbench !== null) {
+          persistWorkbench(merged.semanticWorkbench as SemanticConfig)
+        }
+      }
+
+      // Seed once the namespace is live. installSettingsSection registers the
+      // namespace inside its own deferred ctx.inject callback and then calls
+      // this hook, so the `update` calls below are safe here. A synchronous
+      // seed during `apply` would throw "namespace not registered" because the
+      // registration is deferred until after `apply` returns.
+      if (!seeded) {
+        seeded = true
+        settingsReady = true
+        void probeNames(wired.map((p) => p.name))
+        pushSemanticSummary()
+      }
     },
     validate: (value) => validateConfig(value),
   })
@@ -168,7 +336,10 @@ export function apply(ctx: Context, config: ConfigType): void {
     order: 110,
     text: () => {
       const digest = semantic.promptDigest()
-      return workflowSectionText(config) + (digest !== '' ? `\n\n## Semantic layer (语义层)\n\n${digest}\nWhen a governed metric matches the question, call query_metric — never rebuild its SQL by hand. If the user asks to govern new metrics/labels, propose edits to the semantic file (${config.semanticFile !== '' ? config.semanticFile : 'enable semanticFile in the workbench card'}) and they hot-reload.` : '')
+      const semanticTitle = semanticSectionTitle(config)
+      const semanticPrefix = semanticDigestPrefix(config)
+      const semanticFileHint = config.semanticFile !== '' ? config.semanticFile : (config.locale === 'zh' ? 'enable semanticFile in the workbench card' : 'enable semanticFile in the workbench card')
+      return workflowSectionText(config) + (digest !== '' ? `\n\n${semanticTitle}\n\n${digest}\n${semanticPrefix} ${semanticFileHint}` : '')
     },
   })
 }

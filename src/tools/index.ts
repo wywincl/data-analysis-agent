@@ -21,6 +21,8 @@ import { guardSelectOnly, GuardError } from '../sql/guard.ts'
 import { buildEchartsOption, optionDataPoints } from '../charts/echarts-option.ts'
 import { correlation, distribution, profile, topn, type AnalysisContext, type AnalysisKind } from '../analysis/analyze.ts'
 import { textTable } from './text.ts'
+import { zh, en } from '../i18n/host.ts'
+import { tpl } from '../i18n/index.ts'
 
 /** Lossless object schema for every canonical tool result (official pattern). */
 function objectSchema() {
@@ -36,15 +38,17 @@ function requireProvider(registry: DataSourceRegistry, datasource: string): Data
   return provider
 }
 
+function s(config: Config, key: keyof typeof zh): string {
+  return config.locale === 'en' ? en[key] : zh[key]
+}
+
 /** Register every tool; returns nothing (registrations are effects on ctx). */
 export function registerTools(ctx: Context, config: Config, registry: DataSourceRegistry, semantic: SemanticLayer): void {
   const { modelRowCap } = config
 
   ctx.tools.register(defineTool({
     name: 'list_data_sources',
-    description:
-      'List the configured data sources (SQLite / MySQL / PostgreSQL / Spark) with engine, dialect, '
-      + 'and approval mode. Call this first when unsure which sources exist.',
+    description: s(config, 'tool.list_data_sources.desc'),
     parameters: {},
     output: {
       schema: objectSchema(),
@@ -69,10 +73,7 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
 
   ctx.tools.register(defineTool({
     name: 'inspect_schema',
-    description:
-      'Inspect a data source\'s schema: tables/views, columns with types and comments, row estimates, '
-      + 'and optional sample rows. Read this BEFORE writing SQL. Schema is cached briefly; pass refresh '
-      + 'to re-introspect after suspected DDL changes.',
+    description: s(config, 'tool.inspect_schema.desc'),
     parameters: {
       datasource: { type: 'string', required: true, description: 'Data source name from list_data_sources.' },
       table: { type: 'string', description: 'Optional single table to detail (otherwise all tables are summarized).' },
@@ -87,11 +88,11 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
           tables: { name: string, type: string, rowCountEstimate?: number, columns: string }[],
           sample?: Record<string, JsonValue>[]
         }
-        const head = `Schema of "${result.datasource}" — ${result.tableCount} tables${result.truncated ? ' (truncated)' : ''}:`
+        const head = tpl(s(config, 'tool.inspect_schema.ok') || 'Schema of "{ds}" — {count} tables{truncated}:', { ds: result.datasource, count: result.tableCount, truncated: result.truncated ? ' (truncated)' : '' })
         const body = result.tables.map((table) =>
           `- ${table.name} [${table.type}]${table.rowCountEstimate !== undefined ? ` ~${table.rowCountEstimate} rows` : ''}\n    ${table.columns}`,
         ).join('\n')
-        const sample = result.sample !== undefined ? `\nSamples:\n${textTable(Object.keys(result.sample[0] ?? {}), result.sample, 5)}` : ''
+        const sample = result.sample !== undefined ? `\n${s(config, 'tool.inspect_schema.samples')}:\n${textTable(Object.keys(result.sample[0] ?? {}), result.sample, 5)}` : ''
         return [{ type: 'text', text: `${head}\n${body}${sample}` }]
       },
     },
@@ -162,11 +163,7 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
 
   ctx.tools.register(defineTool({
     name: 'run_sql',
-    description:
-      'Execute ONE read-only SELECT against a data source (text2SQL: you write the SQL). Guardrails: '
-      + 'single SELECT/WITH statement only, LIMIT auto-injected when missing, per-source row cap and '
-      + 'timeout enforced. Returns a resultId you can pass to render_chart without re-sending rows. '
-      + 'Always inspect_schema first; state your intent in "reason" (shown on the approval card).',
+    description: s(config, 'tool.run_sql.desc'),
     parameters: {
       datasource: { type: 'string', required: true, description: 'Data source name.' },
       sql: { type: 'string', required: true, description: 'A single SELECT statement (dialect: see inspect_schema output).' },
@@ -180,14 +177,13 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
           datasource: string, sql: string, rowCount: number, rows: Record<string, JsonValue>[],
           columns: { name: string }[], truncated: boolean, resultId: string
         }
-        const note = result.truncated
-          ? `\nNote: the result filled the row cap — there may be more rows. Aggregate in SQL or refine filters for totals instead of paging.`
-          : ''
+        const columnsStr = result.columns.map((col) => col.name).join(', ')
+        const note = result.truncated ? s(config, 'tool.run_sql.truncatedNote') : ''
         return [{
           type: 'text',
-          text: `Query OK on "${result.datasource}" — ${result.rowCount} rows, columns: ${result.columns.map((col) => col.name).join(', ')}.${note}\n`
-            + `resultId: ${result.resultId}  ← pass THIS value to render_chart to chart the full result\n`
-            + textTable(result.columns.map((col) => col.name), result.rows),
+          text: tpl(s(config, 'tool.run_sql.ok'), { ds: result.datasource, count: result.rowCount, columns: columnsStr }) + note + '\n' +
+            tpl(s(config, 'tool.run_sql.resultIdHint'), { rid: result.resultId }) + '\n' +
+            textTable(result.columns.map((col) => col.name), result.rows),
         }]
       },
     },
@@ -236,12 +232,7 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
 
   ctx.tools.register(defineTool({
     name: 'render_chart',
-    description:
-      'Render an interactive ECharts visualization INSIDE the chat and enable HTML/PNG/CSV export. '
-      + 'Three data sources, in order of preference: (1) resultId from the last run_sql — charts the '
-      + 'FULL result even when only a preview was shown to you; (2) sql — a single SELECT executed '
-      + 'freshly under the same guardrails; (3) inline data rows for values not from a query. '
-      + 'Chart option JSON is built by the platform — you only declare intent: chartType, fields, title.',
+    description: s(config, 'tool.render_chart.desc'),
     parameters: {
       datasource: { type: 'string', required: true, description: 'Data source name (provenance).' },
       title: { type: 'string', required: true, description: 'Human chart title (Chinese when the user writes Chinese).' },
@@ -262,12 +253,8 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
       schema: objectSchema(),
       render: (_args, value) => [{
         type: 'text',
-        text: `Chart rendered in the conversation (chartId ${(value as { chartId: string }).chartId}, ${(value as { points: number }).points} points). `
-          + 'The user sees an interactive chart with HTML/PNG/CSV export buttons.',
+        text: tpl(s(config, 'tool.render_chart.rendered'), { cid: (value as { chartId: string }).chartId, points: (value as { points: number }).points }),
       }],
-      // presentationMeta persists the chart payload on the durable tool/result
-      // event; the browser Conversation Node renders from it on replay. Pure
-      // function of (args, canonical value) per the tool cookbook.
       presentationMeta: (_args, value): JsonValue => {
         const chart = (value as { chart?: Record<string, JsonValue> }).chart
         if (chart === undefined) return {}
@@ -276,7 +263,7 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
     },
     presentCall: (args) => ({
       card: 'generic' as const,
-      title: `图表 · ${args.title}`,
+      title: `${s(config, 'tool.render_chart.cardPrefix')} · ${args.title}`,
       kind: 'other' as const,
       rawInput: { datasource: args.datasource, chartType: args.chartType, title: args.title },
     }),
@@ -293,7 +280,6 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
         columns = cached.columns.map((col) => ({ ...col }))
         sql = sql ?? cached.sql
       } else if (typeof args.sql === 'string' && args.sql.trim() !== '') {
-        // One-shot chart-from-SQL: same guard + caps as run_sql.
         const provider = requireProvider(registry, args.datasource)
         const configured = config.dataSources.find((ds) => ds.name === args.datasource)
         const guarded = guardSelectOnly(args.sql, provider.dialect, config.chartDataCap)
@@ -336,9 +322,6 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
         columns,
         createdAt: new Date().toISOString(),
       } as const
-      // The payload reaches the browser through the durable `tool/result`
-      // meta (output.presentationMeta below) — no custom session event type,
-      // so session logs stay readable by any harness build.
       return {
         chartId: event.chartId,
         chartType: event.chartType,
@@ -351,10 +334,7 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
 
   ctx.tools.register(defineTool({
     name: 'analyze_data',
-    description:
-      'Run a built-in statistical analysis over a base SELECT: profile (per-column stats), topn '
-      + '(group-by top N), correlation (Pearson between two numeric columns), distribution (histogram). '
-      + 'Pass the base SQL; derived queries are generated and executed for you.',
+    description: s(config, 'tool.analyze_data.desc'),
     parameters: {
       datasource: { type: 'string', required: true, description: 'Data source name.' },
       analysis: { type: 'string', required: true, enum: ['profile', 'topn', 'correlation', 'distribution'], description: 'Analysis kind.' },
@@ -371,12 +351,12 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
       schema: objectSchema(),
       render: (_args, value) => [{
         type: 'text',
-        text: `Analysis "${(value as { analysis: string }).analysis}" complete — interpret the numbers below and state findings with evidence:\n${JSON.stringify(value, null, 2).slice(0, 6000)}`,
+        text: tpl(s(config, 'tool.analyze_data.complete'), { analysis: (value as { analysis: string }).analysis }) + '\n' + JSON.stringify(value, null, 2).slice(0, 6000),
       }],
     },
     presentCall: (args) => ({
       card: 'generic' as const,
-      title: `分析 · ${args.analysis}`,
+      title: `${s(config, 'tool.analyze_data.cardPrefix')} · ${args.analysis}`,
       kind: 'other' as const,
       rawInput: { datasource: args.datasource, analysis: args.analysis, sql: args.sql },
     }),

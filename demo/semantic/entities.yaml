@@ -1,0 +1,37 @@
+# 实体层(meaning):表/列的业务含义,叠加进 inspect_schema 的输出。
+#
+# entity 上的 timeField / dimensions / filters 是该实体下所有指标的默认继承来源:
+# 指标没有声明时自动沿用,声明了则以指标为准。这样"这个域默认按哪列看时间、能按哪些维度拆"
+# 只写一次,不用在每个指标里重复。
+
+entities:
+  - table: orders
+    label: 订单表
+    description: 订单事实表,一行一笔订单,时间列为 created_at
+    # 订单域可拆维度的默认集合;单个指标可用自己的 dimensions 覆盖。
+    # (这里刻意不设 timeField —— gmv_total 是"全区间单值"指标,一旦继承到时间列,
+    #  query_metric 就会按天分组,单值 KPI 会变成时间序列。时间列由需要的指标各自声明。)
+    dimensions: [status, user_id]
+    columns:
+      - { name: user_id, label: 用户 ID, description: "下单用户,关联 users.id" }
+      - { name: amount, label: 订单金额, description: 实付金额, unit: 元 }
+      - { name: status, label: 订单状态, description: "paid=已支付 / shipped=已发货 / refunded=已退款 / pending=待支付" }
+      - { name: created_at, label: 下单时间 }
+
+  - table: users
+    label: 用户表
+    description: 用户维表,一行一个注册用户
+    dimensions: [city, signup_date]
+    columns:
+      - { name: city, label: 所在城市 }
+      - { name: signup_date, label: 注册日期 }
+
+  - table: daily_revenue
+    label: 每日收入聚合表
+    description: 按天预聚合的收入(dt = 日期)
+    # 预聚合表的时间列就是 dt,挂在这里,基于它的指标不必再写一遍。
+    timeField: dt
+    columns:
+      - { name: dt, label: 日期 }
+      - { name: revenue, label: 收入, unit: 元 }
+      - { name: orders, label: 订单数, unit: 笔 }
