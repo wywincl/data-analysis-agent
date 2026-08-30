@@ -53,7 +53,14 @@ DSH_HOME=~/.dsh-rd pnpm dsh --profile rd --port 3199 --no-open
 |---|---|
 | `npm run watch` | 热构建（client 半变更需刷新页面） |
 | `npm test` | 运行 Vitest |
-| `npm run typecheck` | TypeScript 类型检查 |
+| `npm run typecheck` | TypeScript 类型检查（前置：`npm run setup:links` 软链 `@deepseek-ai/*`） |
+| `npm run setup:links` | 把 `@deepseek-ai/*` 软链到本地 dsh checkout |
+
+浏览器 E2E（`tests/e2e-dashboard.spec.ts`）验证导出的自包含看板在真实浏览器里能画出来、点击能跨图筛选、筛选能靠 URL hash 还原——它依赖可选的 `playwright` devDependency，未安装时该 suite 自动 skip：
+
+```bash
+npm i -D playwright && npx playwright install chromium
+```
 
 ### 纯 Host 用法（不需要 UI）
 

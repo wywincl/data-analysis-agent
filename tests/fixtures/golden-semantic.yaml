@@ -1,0 +1,87 @@
+# Golden-SQL regression fixture for the semantic layer SQL builder.
+#
+# tests/golden-sql.spec.ts snapshots buildMetricSql() output for every metric
+# below. Any intentional SQL-shape change must update the golden strings in
+# that spec — review the diff like a snapshot test.
+
+defaults:
+  datasource: demo
+  timeField: created_at
+
+entities:
+  - table: orders
+    label: 订单表
+    columns:
+      - name: order_id
+      - name: user_id
+      - name: status
+      - name: amount
+        unit: 元
+      - name: city
+      - name: tenant_id
+      - name: created_at
+    relationships:
+      - entity: users
+        on: [user_id, user_id]
+    rowFilter: "tenant_id = '{role}'"
+
+  - table: users
+    label: 用户表
+    columns:
+      - name: user_id
+      - name: city
+        sensitive: true
+      - name: created_at
+    readRoles: [admin]
+
+metrics:
+  - name: daily_revenue
+    label: 每日营收
+    entity: orders
+    agg: sum
+    measure: amount
+    dimensions: [status, city]
+
+  - name: paying_orders
+    label: 支付订单数
+    entity: orders
+    agg: count
+    dimensions: [city]
+    filters: ["status = 'paid'"]
+
+  - name: revenue_by_city
+    label: 城市营收
+    entity: orders
+    agg: sum
+    measure: amount
+    dimensions: [city]
+    joins: [users]
+
+  - name: order_rate
+    label: 支付率
+    entity: orders
+    agg: ratio
+    dimensions: []
+    numerator:
+      metric: paying_orders
+    denominator:
+      entity: orders
+      agg: count
+
+  - name: order_rate_by_city
+    label: 城市支付率
+    entity: orders
+    agg: ratio
+    dimensions: [city]
+    numerator:
+      metric: paying_orders
+    denominator:
+      entity: orders
+      agg: count
+
+  - name: avg_amount_expr
+    label: 平均金额(表达式)
+    entity: orders
+    agg: expression
+    expression: "AVG(orders.\"amount\") FILTER (WHERE orders.\"status\" = 'paid')"
+    dimensions: []

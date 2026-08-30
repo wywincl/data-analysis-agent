@@ -74,6 +74,7 @@
     "mysql2": "^3.24.2",
     "node-sql-parser": "^5.4.0",
     "pg": "^8.23.0",
+    "playwright": "^1.62.1",
     "react": "^18.2.0",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
