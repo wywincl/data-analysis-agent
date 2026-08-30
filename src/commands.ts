@@ -21,6 +21,7 @@ import echartsUmd from 'echarts-umd-text'
 import { zh, en, type HostLocale } from './i18n/host.ts'
 import { tpl } from './i18n/index.ts'
 import { formatLintIssues } from './semantic/lint.ts'
+import { lintAgainstSchema } from './semantic/drift.ts'
 
 /** Collect this session's charts from the durable log (survives restarts). */
 function sessionCharts(session: { readonly events: readonly unknown[] } | undefined): RdChartEvent[] {
@@ -136,6 +137,48 @@ export function registerCommands(ctx: Context, config: Config, registry: DataSou
         kind: 'success',
         text: tpl(s(config, 'cmd.data-semantic-lint.warnings'), { count: catalog.issues.length, header, lines: lines.join('\n') }),
       }
+    },
+  })
+
+  ctx.commands.register({
+    name: 'data-semantic-validate',
+    description: s(config, 'cmd.data-semantic-validate.desc'),
+    recordInput: false,
+    handler: async (): Promise<CommandResult> => {
+      if (semantic.file === undefined) {
+        return { kind: 'error', text: s(config, 'cmd.data-semantic-validate.noFile') }
+      }
+      const catalog = semantic.catalog()
+      if (catalog.error !== undefined) {
+        return { kind: 'error', text: tpl(s(config, 'cmd.data-semantic-validate.loadFail'), { err: catalog.error }) }
+      }
+      // Validate each datasource the layer touches against its live schema.
+      const sources = new Set<string>()
+      for (const entity of catalog.entities) {
+        const ds = entity.datasource ?? semantic.get().defaults?.datasource
+        if (ds !== undefined) sources.add(ds)
+      }
+      const allIssues: { datasource: string, issue: ReturnType<typeof formatLintIssues>[number] }[] = []
+      for (const datasource of sources) {
+        const provider = registry.get(datasource)
+        if (provider === undefined) {
+          allIssues.push({ datasource, issue: { severity: 'warning', code: 'drift-table-missing', path: `datasource ${datasource}`, message: `数据源 "${datasource}" 未连接,跳过漂移校验`, hint: undefined } })
+          continue
+        }
+        try {
+          const schema = await registry.schema(datasource, { signal: undefined })
+          const raw = lintAgainstSchema(semantic.get(), schema)
+          const locale: HostLocale = config.locale === 'en' ? 'en' : 'zh'
+          for (const view of formatLintIssues(raw, locale)) allIssues.push({ datasource, issue: view })
+        } catch (error) {
+          allIssues.push({ datasource, issue: { severity: 'warning', code: 'drift-table-missing', path: `datasource ${datasource}`, message: `内省失败: ${error instanceof Error ? error.message : String(error)}`, hint: undefined } })
+        }
+      }
+      if (allIssues.length === 0) {
+        return { kind: 'success', text: tpl(s(config, 'cmd.data-semantic-validate.pass'), { count: sources.size }) }
+      }
+      const lines = allIssues.map(({ datasource, issue }) => `- [${datasource}] ${issue.path}: ${issue.message}${issue.hint !== undefined ? ` → ${issue.hint}` : ''}`)
+      return { kind: 'success', text: tpl(s(config, 'cmd.data-semantic-validate.warnings'), { count: allIssues.length, lines: lines.join('\n') }) }
     },
   })
 

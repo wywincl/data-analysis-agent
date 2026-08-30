@@ -78,10 +78,10 @@ describe('SemanticLayer.buildMetricSql', () => {
 
   it('time series default: group by timeField', () => {
     const built = layer.buildMetricSql('daily_revenue', {}, 'sqlite')
-    expect(built.sql).toContain('SELECT "created_at" AS "created_at", SUM("amount") AS "value"')
-    expect(built.sql).toContain('FROM "orders"')
+    expect(built.sql).toContain('SELECT orders."created_at" AS "created_at", SUM(orders."amount") AS "value"')
+    expect(built.sql).toContain('FROM "orders" AS orders')
     expect(built.sql).toContain("WHERE status = 'paid'")
-    expect(built.sql).toContain('GROUP BY "created_at"')
+    expect(built.sql).toContain('GROUP BY orders."created_at"')
     expect(built.datasource).toBe('demo')
   })
 
@@ -92,10 +92,10 @@ describe('SemanticLayer.buildMetricSql', () => {
       from: '2026-03-01',
       to: '2026-03-31',
     }, 'mysql')
-    expect(built.sql).toContain('`status` AS `status`')
-    expect(built.sql).toContain("`city` = '杭州''; DROP TABLE orders--'")
-    expect(built.sql).toContain("`created_at` >= '2026-03-01'")
-    expect(built.sql).toContain('GROUP BY `status`, `city`')
+    expect(built.sql).toContain('orders.`status` AS `status`')
+    expect(built.sql).toContain("orders.`city` = '杭州''; DROP TABLE orders--'")
+    expect(built.sql).toContain("orders.`created_at` >= '2026-03-01'")
+    expect(built.sql).toContain('GROUP BY orders.`status`, orders.`city`')
     expect(built.sql).toContain('ORDER BY value DESC')
   })
 
@@ -106,7 +106,7 @@ describe('SemanticLayer.buildMetricSql', () => {
 
   it('count uses *, count_distinct uses DISTINCT', () => {
     expect(layer.buildMetricSql('order_count', {}, 'sqlite').sql).toContain('COUNT(*)')
-    expect(layer.buildMetricSql('paying_users', {}, 'sqlite').sql).toContain('COUNT(DISTINCT "user_id")')
+    expect(layer.buildMetricSql('paying_users', {}, 'sqlite').sql).toContain('COUNT(DISTINCT orders."user_id")')
   })
 
   it('catalog + promptDigest + entityFor expose the governed layer', () => {

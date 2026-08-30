@@ -505,7 +505,7 @@ describe('demo/semantic.yaml', () => {
       // 时间列 + filters 都来自继承/基础口径:SQL 里必须带上 status = 'paid'
       const daily = layer.buildMetricSql('daily_revenue', { from: '2026-01-01', to: '2026-12-31' }, provider.dialect)
       expect(daily.sql).toContain("WHERE status = 'paid'")
-      expect(daily.sql).toContain('GROUP BY "created_at"')
+      expect(daily.sql).toContain('GROUP BY orders."created_at"')
       const rows = await provider.query(guardSelectOnly(daily.sql, provider.dialect, 500).sql, { timeoutMs: 5000, maxRows: 500 })
       expect(rows.rowCount).toBeGreaterThan(0)
 
@@ -517,7 +517,7 @@ describe('demo/semantic.yaml', () => {
 
       // 预聚合表:时间列继承自 entity daily_revenue.timeField
       const agg = layer.buildMetricSql('agg_daily_revenue', {}, provider.dialect)
-      expect(agg.sql).toContain('GROUP BY "dt"')
+      expect(agg.sql).toContain('GROUP BY daily_revenue."dt"')
       const aggRows = await provider.query(guardSelectOnly(agg.sql, provider.dialect, 500).sql, { timeoutMs: 5000, maxRows: 500 })
       expect(aggRows.rowCount).toBeGreaterThan(0)
     } finally {

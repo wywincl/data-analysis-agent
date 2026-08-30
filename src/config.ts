@@ -108,6 +108,13 @@ export interface Config {
   resultCacheTtlMs: number
   /** Interface language: 'zh' (default) or 'en'. */
   locale: string
+  /**
+   * Active role for row-level security. When set, entity `rowFilter` predicates
+   * (with `{role}` substituted) are AND-ed into queries, and `sensitive` columns
+   * are masked unless the role is in the entity's `readRoles`. Empty = no role
+   * context (RLS predicates and masking are skipped).
+   */
+  currentRole: string
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -156,6 +163,7 @@ export const Config: Schema<Config> = Schema.object({
   resultCacheSize: Schema.number().default(50).description('每会话保留的已执行查询结果条数 | Executed query results kept per session'),
   resultCacheTtlMs: Schema.number().default(30 * 60_000).description('resultId 引用 TTL(毫秒) | resultId reference TTL in ms, consumed by render_chart'),
   locale: Schema.string().default('zh').description('界面语言: zh(中文) 或 en(English)'),
+  currentRole: Schema.string().default('').description('当前角色(行级安全):非空时,实体的 rowFilter 会按 {role} 注入,敏感列对无 readRoles 的角色脱敏 | Active role for RLS: when set, entity rowFilter is injected with {role} and sensitive columns are masked'),
 })
 
 /** Reject invalid datasource entries at load time — fail loudly, not lazily. */

@@ -127,7 +127,7 @@ export function registerSemanticTools(ctx: Context, config: Config, registry: Da
         ...(args.to !== undefined ? { to: args.to } : {}),
         ...(args.limit !== undefined ? { limit: args.limit } : {}),
         locale: config.locale === 'en' ? 'en' as const : 'zh' as const,
-      }, provider.dialect)
+      }, provider.dialect, { currentRole: config.currentRole !== '' ? config.currentRole : undefined })
       const configured = config.dataSources.find((ds) => ds.name === resolved.datasource)
       const { timeoutMs, maxRows } = limitsFor(config, configured)
       const guarded = guardSelectOnly(built.sql, provider.dialect, maxRows)

@@ -19,6 +19,7 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     resultCacheSize: 50,
     resultCacheTtlMs: 30 * 60_000,
     locale: 'zh',
+    currentRole: '',
     ...overrides,
   }
 }

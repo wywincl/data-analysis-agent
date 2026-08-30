@@ -17,7 +17,7 @@
 import { readdirSync, statSync, watch, type FSWatcher } from 'node:fs'
 import { dirname, sep } from 'node:path'
 import { loadSemanticGraph } from './load.ts'
-import type { LintIssue, ResolvedMetric, SemanticConfig, SemanticEntity, SemanticMetric } from './types.ts'
+import type { LintIssue, MetricRef, ResolvedMetric, SemanticConfig, SemanticEntity, SemanticMetric } from './types.ts'
 import { GuardError, assertSafeIdentifier, quoteIdentifier } from '../sql/guard.ts'
 import type { SqlDialect } from '../types.ts'
 
@@ -320,21 +320,80 @@ export class SemanticLayer {
 
   /**
    * Build the metric SQL. Throws GuardError on unknown ids, undeclared
-   * dimensions, or bad identifiers.
+   * dimensions, or bad identifiers. Supports single-table metrics, cross-table
+   * `joins`, `ratio` metrics, `expression` metrics, and row-level security
+   * (`rowFilter`) with PII column masking (`sensitive`).
    */
-  buildMetricSql(metricName: string, query: MetricQuery = {}, dialect: SqlDialect = 'sqlite'): BuiltMetricSql {
-    const { metric, entity, datasource } = this.resolveMetric(metricName)
-    const table = quoteIdentifier(assertSafeIdentifier(entity.table, 'entity table'), dialect)
+  buildMetricSql(
+    metricName: string,
+    query: MetricQuery = {},
+    dialect: SqlDialect = 'sqlite',
+    options: { currentRole?: string } = {},
+  ): BuiltMetricSql {
+    const { metric } = this.resolveMetric(metricName)
+    if (metric.agg === 'ratio') return this.buildRatioSql(metricName, query, dialect, options)
+
+    const { entity, datasource } = this.resolveMetric(metricName)
+    const currentRole = options.currentRole
+
+    const baseAlias = entity.table
+    const joinGraph = this.resolveJoinGraph(baseAlias, metric.joins ?? [])
+    const inScope = [baseAlias, ...joinGraph.map((entry) => entry.table)]
+    const mayRead = (table: string): boolean => {
+      if (currentRole === undefined) return false
+      const found = this.config.entities?.find((entry) => entry.table === table)
+      return found?.readRoles?.includes(currentRole) ?? false
+    }
+    const isSensitive = (table: string, column: string): boolean => {
+      const found = this.config.entities?.find((entry) => entry.table === table)
+      return found?.columns?.some((columnMeta) => columnMeta.name === column && columnMeta.sensitive === true) ?? false
+    }
+    const refOf = (ref: string): { alias: string, column: string } => {
+      if (ref.includes('.')) {
+        const [table, column] = ref.split('.')
+        if (!inScope.includes(table)) {
+          throw new GuardError(`列引用 "${ref}" 的表 "${table}" 不在指标 "${metric.name}" 的作用域(${inScope.join('/')})`)
+        }
+        return { alias: table, column }
+      }
+      for (const table of inScope) {
+        const found = this.config.entities?.find((entry) => entry.table === table)
+        if (found && (found.columns?.some((columnMeta) => columnMeta.name === ref) || (found.dimensions ?? []).includes(ref))) {
+          return { alias: table, column: ref }
+        }
+      }
+      return { alias: baseAlias, column: ref }
+    }
+    /**
+     * Qualify a column with its table alias. The alias is emitted UNQUOTED
+     * (`orders."amount"`) on purpose: node-sql-parser's sqlite/postgresql/hive
+     * dialects cannot parse a double-quoted *qualifier* (`"orders"."amount"`),
+     * so a quoted alias would make every generated query fail the read-only
+     * guard. The column itself is still quoted per dialect for reserved-word
+     * safety. The alias always equals the table name, so dotted refs in the
+     * YAML (`users.city`) resolve to the same alias used here.
+     */
+    const qualifyExpr = (alias: string, column: string): string => `${alias}.${quoteIdentifier(column, dialect)}`
+    /** Resolve a column ref to a possibly-masked SQL fragment. */
+    const colExpr = (ref: string, allowMask = true): string => {
+      const resolved = refOf(ref)
+      const masked = allowMask && isSensitive(resolved.alias, resolved.column) && !mayRead(resolved.alias)
+      return masked ? 'NULL' : qualifyExpr(resolved.alias, resolved.column)
+    }
 
     const declared = metric.dimensions ?? []
     const requested = query.dimensions ?? []
+    // A dimension may be passed qualified as `<table>.<column>` to disambiguate
+    // a column that lives on a joined table; accept it when the base column is
+    // a declared dimension. `refOf` resolves the qualified form downstream.
+    const baseName = (name: string): string => (name.includes('.') ? name.split('.')[1] : name)
     for (const dimension of requested) {
-      if (!declared.includes(dimension)) {
+      if (!declared.includes(baseName(dimension))) {
         throw new GuardError(`Dimension "${dimension}" is not declared on metric "${metric.name}" (allowed: ${declared.join('/') || 'none'}).`)
       }
     }
     for (const key of Object.keys(query.filters ?? {})) {
-      if (!declared.includes(key)) {
+      if (!declared.includes(baseName(key))) {
         throw new GuardError(`Filter key "${key}" is not a declared dimension of metric "${metric.name}" (allowed: ${declared.join('/') || 'none'}).`)
       }
     }
@@ -342,48 +401,67 @@ export class SemanticLayer {
       throw new GuardError(`Metric "${metric.name}" declares no timeField — from/to unsupported.`)
     }
 
-    const aggExpr = metric.agg === 'count'
-      ? 'COUNT(*)'
-      : metric.agg === 'count_distinct'
-        ? `COUNT(DISTINCT ${quoteIdentifier(assertSafeIdentifier(metric.measure!, 'measure'), dialect)})`
-        : `${metric.agg.toUpperCase()}(${quoteIdentifier(assertSafeIdentifier(metric.measure!, 'measure'), dialect)})`
+    let aggExpr: string
+    if (metric.agg === 'expression') {
+      if (metric.expression === undefined) throw new GuardError(`Metric "${metric.name}" uses agg "expression" but has no expression.`)
+      aggExpr = metric.expression
+    } else if (metric.agg === 'count') {
+      aggExpr = 'COUNT(*)'
+    } else if (metric.agg === 'count_distinct') {
+      aggExpr = `COUNT(DISTINCT ${colExpr(assertSafeIdentifier(metric.measure!, 'measure'))})`
+    } else {
+      aggExpr = `${metric.agg.toUpperCase()}(${colExpr(assertSafeIdentifier(metric.measure!, 'measure'))})`
+    }
     const valueLabel = metric.label ?? metric.name
 
     const selectParts: string[] = []
     const groupParts: string[] = []
     const columns: { name: string, label: string }[] = []
     for (const dimension of requested) {
-      const quoted = quoteIdentifier(assertSafeIdentifier(dimension, 'dimension'), dialect)
-      selectParts.push(`${quoted} AS ${quoteIdentifier(dimension, dialect)}`)
-      groupParts.push(quoted)
-      const columnMeta = entity.columns?.find((column) => column.name === dimension)
+      const resolved = refOf(assertSafeIdentifier(dimension, 'dimension'))
+      const masked = isSensitive(resolved.alias, resolved.column) && !mayRead(resolved.alias)
+      selectParts.push(`${masked ? 'NULL' : qualifyExpr(resolved.alias, resolved.column)} AS ${quoteIdentifier(dimension, dialect)}`)
+      groupParts.push(qualifyExpr(resolved.alias, resolved.column))
+      const columnMeta = this.config.entities?.find((entry) => entry.table === resolved.alias)?.columns?.find((columnInfo) => columnInfo.name === resolved.column)
       columns.push({ name: dimension, label: columnMeta?.label ?? dimension })
     }
     if (requested.length === 0 && metric.timeField !== undefined) {
-      const time = quoteIdentifier(assertSafeIdentifier(metric.timeField, 'timeField'), dialect)
-      selectParts.push(`${time} AS ${quoteIdentifier(metric.timeField, dialect)}`)
-      groupParts.push(time)
+      const resolved = refOf(assertSafeIdentifier(metric.timeField, 'timeField'))
+      selectParts.push(`${qualifyExpr(resolved.alias, resolved.column)} AS ${quoteIdentifier(metric.timeField, dialect)}`)
+      groupParts.push(qualifyExpr(resolved.alias, resolved.column))
       columns.push({ name: metric.timeField, label: query.locale === 'en' ? 'time' : '时间' })
     }
     selectParts.push(`${aggExpr} AS ${quoteIdentifier('value', dialect)}`)
     columns.push({ name: 'value', label: valueLabel })
 
+    const fromClause = `${quoteIdentifier(baseAlias, dialect)} AS ${baseAlias}`
+    const joinClauses = joinGraph.map((entry) =>
+      `JOIN ${quoteIdentifier(entry.table, dialect)} AS ${entry.table} ON ${entry.parentAlias}.${quoteIdentifier(entry.parentCol, dialect)} = ${entry.table}.${quoteIdentifier(entry.thisCol, dialect)}`)
+
     const whereParts: string[] = [...(metric.filters ?? [])]
     for (const [key, raw] of Object.entries(query.filters ?? {})) {
-      const quoted = quoteIdentifier(assertSafeIdentifier(key, 'filter dimension'), dialect)
+      const column = colExpr(assertSafeIdentifier(key, 'filter dimension'))
       if (Array.isArray(raw)) {
         if (raw.length === 0) continue
         const literals = (raw as readonly (string | number)[]).map((value) => sqlLiteral(value, dialect)).join(', ')
-        whereParts.push(`${quoted} IN (${literals})`)
+        whereParts.push(`${column} IN (${literals})`)
       } else {
-        whereParts.push(`${quoted} = ${sqlLiteral(raw as string | number | boolean, dialect)}`)
+        whereParts.push(`${column} = ${sqlLiteral(raw as string | number | boolean, dialect)}`)
       }
     }
     if (query.from !== undefined && metric.timeField !== undefined) {
-      whereParts.push(`${quoteIdentifier(metric.timeField, dialect)} >= ${sqlLiteral(query.from, dialect)}`)
+      whereParts.push(`${colExpr(assertSafeIdentifier(metric.timeField, 'timeField'))} >= ${sqlLiteral(query.from, dialect)}`)
     }
     if (query.to !== undefined && metric.timeField !== undefined) {
-      whereParts.push(`${quoteIdentifier(metric.timeField, dialect)} <= ${sqlLiteral(query.to, dialect)}`)
+      whereParts.push(`${colExpr(assertSafeIdentifier(metric.timeField, 'timeField'))} <= ${sqlLiteral(query.to, dialect)}`)
+    }
+    if (currentRole !== undefined && entity.rowFilter !== undefined && !mayRead(baseAlias)) {
+      // The YAML predicate is operator-authored (trusted, like metric.filters)
+      // and already supplies the literal delimiters, e.g. `tenant_id = '{role}'`.
+      // Substitute the raw role value (with embedded quotes escaped) so we do
+      // not double-wrap it — sqlLiteral() would add its own quotes and produce
+      // `tenant_id = ''acme''`. The role is still quoted-injection-safe here.
+      whereParts.push(entity.rowFilter.replace(/\{role\}/g, currentRole.replace(/'/g, "''")))
     }
 
     const limit = Math.min(Math.max(query.limit ?? 500, 1), 5000)
@@ -394,7 +472,114 @@ export class SemanticLayer {
         ? '\nORDER BY value DESC'
         : `\nORDER BY ${groupParts[0]} ASC`
       : ''
-    const sql = `SELECT ${selectParts.join(', ')}\nFROM ${table}${where}${groupBy}${orderBy}\nLIMIT ${limit}`
+    const fromBlock = [fromClause, ...joinClauses].join('\n')
+    const sql = `SELECT ${selectParts.join(', ')}\nFROM ${fromBlock}${where}${groupBy}${orderBy}\nLIMIT ${limit}`
+    return { sql, datasource, dialect, columns }
+  }
+
+  /**
+   * Resolve the ordered JOIN list for a metric's `joins`. Includes any
+   * intermediate tables on the path so multi-hop relationships work. Each entry
+   * carries the parent (already-included) alias and the FK columns.
+   */
+  private resolveJoinGraph(baseTable: string, requestedJoins: readonly string[]): { table: string, parentAlias: string, parentCol: string, thisCol: string }[] {
+    const edgesOf = (table: string): { to: string, fromCol: string, toCol: string }[] => {
+      const entity = this.config.entities?.find((entry) => entry.table === table)
+      return (entity?.relationships ?? []).map((relationship) => ({ to: relationship.entity, fromCol: relationship.on[0], toCol: relationship.on[1] }))
+    }
+    const included = new Set<string>([baseTable])
+    const needed = new Set(requestedJoins)
+    for (let changed = true; changed;) {
+      changed = false
+      for (const table of [...included]) {
+        for (const edge of edgesOf(table)) {
+          if (needed.has(edge.to) && !included.has(edge.to)) {
+            included.add(edge.to)
+            changed = true
+          }
+        }
+      }
+    }
+    const result: { table: string, parentAlias: string, parentCol: string, thisCol: string }[] = []
+    const emitted = new Set<string>([baseTable])
+    const queue = [baseTable]
+    while (queue.length > 0) {
+      const current = queue.shift()!
+      for (const edge of edgesOf(current)) {
+        if (included.has(edge.to) && !emitted.has(edge.to)) {
+          result.push({ table: edge.to, parentAlias: current, parentCol: edge.fromCol, thisCol: edge.toCol })
+          emitted.add(edge.to)
+          queue.push(edge.to)
+        }
+      }
+    }
+    return result
+  }
+
+  /** Build SQL for a `ratio` metric: numerator / NULLIF(denominator, 0), grouped by the metric's dimensions. */
+  private buildRatioSql(metricName: string, query: MetricQuery, dialect: SqlDialect, options: { currentRole?: string }): BuiltMetricSql {
+    const { metric, datasource } = this.resolveMetric(metricName)
+    const num = metric.numerator
+    const den = metric.denominator
+    if (num === undefined || den === undefined) {
+      throw new GuardError(`Metric "${metric.name}" (ratio) requires both numerator and denominator.`)
+    }
+    const declared = metric.dimensions ?? []
+    const requested = query.dimensions ?? declared
+    for (const dimension of requested) {
+      if (!declared.includes(dimension)) {
+        throw new GuardError(`Dimension "${dimension}" is not declared on ratio metric "${metric.name}" (allowed: ${declared.join('/') || 'none'}).`)
+      }
+    }
+    if ((query.from !== undefined || query.to !== undefined) && metric.timeField === undefined) {
+      throw new GuardError(`Ratio metric "${metric.name}" declares no timeField — from/to unsupported.`)
+    }
+
+    const sideSql = (ref: NonNullable<SemanticMetric['numerator']>): string => {
+      // Resolve a metric reference into its entity/agg/measure/filters.
+      let entityName = ref.entity
+      let agg = ref.agg
+      let measure = ref.measure
+      let extraFilters = ref.filters ?? []
+      if (ref.metric !== undefined) {
+        const referenced = this.config.metrics?.find((entry) => entry.name === ref.metric)
+        if (referenced === undefined) throw new GuardError(`Ratio side references unknown metric "${ref.metric}".`)
+        entityName = entityName ?? referenced.entity
+        agg = agg ?? referenced.agg
+        measure = measure ?? referenced.measure
+        extraFilters = [...(referenced.filters ?? []), ...extraFilters]
+      }
+      entityName = entityName ?? metric.entity
+      const entity = this.config.entities?.find((entry) => entry.table === entityName)
+      if (entity === undefined) throw new GuardError(`Ratio side references unknown entity "${entityName}".`)
+      agg = agg ?? (measure !== undefined ? 'sum' : 'count')
+      const aggExpr = agg === 'count'
+        ? 'COUNT(*)'
+        : `${agg.toUpperCase()}(${quoteIdentifier(assertSafeIdentifier(measure!, 'ratio measure'), dialect)})`
+      const predicates = [...(metric.filters ?? []), ...extraFilters]
+      const dimSelect = requested.map((dimension) => `${quoteIdentifier(assertSafeIdentifier(dimension, 'dim'), dialect)} AS ${quoteIdentifier(dimension, dialect)}`).join(', ')
+      const dimGroup = requested.map((dimension) => quoteIdentifier(assertSafeIdentifier(dimension, 'dim'), dialect)).join(', ')
+      const selectList = requested.length > 0 ? `${dimSelect}, ${aggExpr} AS v` : `${aggExpr} AS v`
+      const groupBy = requested.length > 0 ? `\nGROUP BY ${dimGroup}` : ''
+      const whereClause = predicates.length > 0 ? `\nWHERE ${predicates.join('\n  AND ')}` : ''
+      return `SELECT ${selectList}\nFROM ${quoteIdentifier(entityName, dialect)}${whereClause}${groupBy}`
+    }
+
+    const numSql = sideSql(num)
+    const denSql = sideSql(den)
+    const limit = Math.min(Math.max(query.limit ?? 500, 1), 5000)
+    let sql: string
+    if (requested.length > 0) {
+      const joinOn = requested.map((dimension) => `num.${quoteIdentifier(dimension, dialect)} = den.${quoteIdentifier(dimension, dialect)}`).join(' AND ')
+      const dimSelect = requested.map((dimension) => `COALESCE(num.${quoteIdentifier(dimension, dialect)}, den.${quoteIdentifier(dimension, dialect)}) AS ${quoteIdentifier(dimension, dialect)}`).join(', ')
+      sql = `SELECT ${dimSelect}, num.v / NULLIF(den.v, 0) AS value\nFROM (${numSql}) AS num\nLEFT JOIN (${denSql}) AS den ON ${joinOn}\nLIMIT ${limit}`
+    } else {
+      sql = `SELECT (${numSql}) / NULLIF((${denSql}), 0) AS value\nFROM (${numSql}) AS num, (${denSql}) AS den\nLIMIT ${limit}`
+    }
+    const columns = [
+      ...requested.map((dimension) => ({ name: dimension, label: dimension })),
+      { name: 'value', label: metric.label ?? metric.name },
+    ]
     return { sql, datasource, dialect, columns }
   }
 }

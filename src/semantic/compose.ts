@@ -125,6 +125,25 @@ function parseEntity(raw: unknown, index: number, file: string): SemanticEntity 
         ...(optionalString(col.label) !== undefined ? { label: String(col.label) } : {}),
         ...(optionalString(col.description) !== undefined ? { description: String(col.description) } : {}),
         ...(optionalString(col.unit) !== undefined ? { unit: String(col.unit) } : {}),
+        ...(entry.columns !== null && typeof col.sensitive === 'boolean' ? { sensitive: col.sensitive } : {}),
+      }
+    })
+  const relationships = entry.relationships === undefined || entry.relationships === null
+    ? undefined
+    : (Array.isArray(entry.relationships) ? entry.relationships : (() => {
+      throw new SemanticConfigError(`${file}: entities[${index}].relationships must be an array`)
+    })()).map((relationship: unknown, relationshipIndex: number) => {
+      if (relationship === null || typeof relationship !== 'object') {
+        throw new SemanticConfigError(`${file}: entities[${index}].relationships[${relationshipIndex}] must be a mapping`)
+      }
+      const rel = relationship as Record<string, unknown>
+      const on = rel.on
+      if (!Array.isArray(on) || on.length !== 2 || typeof on[0] !== 'string' || typeof on[1] !== 'string') {
+        throw new SemanticConfigError(`${file}: entities[${index}].relationships[${relationshipIndex}].on must be [thisColumn, relatedColumn]`)
+      }
+      return {
+        entity: assertIdent(rel.entity, `${file}: entities[${index}].relationships[${relationshipIndex}].entity`),
+        on: [assertIdent(on[0], 'relationship from-column'), assertIdent(on[1], 'relationship to-column')] as [string, string],
       }
     })
   return {
@@ -144,6 +163,11 @@ function parseEntity(raw: unknown, index: number, file: string): SemanticEntity 
       ? { dimensions: entry.dimensions as string[] }
       : {}),
     ...(columns !== undefined ? { columns } : {}),
+    ...(relationships !== undefined && relationships.length > 0 ? { relationships } : {}),
+    ...(optionalString(entry.rowFilter) !== undefined ? { rowFilter: String(entry.rowFilter) } : {}),
+    ...(assertOptionalStringArray(entry.readRoles, `${file}: entities[${index}].readRoles`, false) !== undefined
+      ? { readRoles: entry.readRoles as string[] }
+      : {}),
   }
 }
 
@@ -165,6 +189,22 @@ function parseTerm(raw: unknown, index: number, file: string): SemanticTerm {
   }
 }
 
+/** Parse one side of a ratio metric (inline aggregate or a metric reference). */
+function parseMetricRef(raw: unknown, file: string, metricIndex: number, side: string): { metric?: string, entity?: string, measure?: string, agg?: MetricAgg, filters?: string[] } | undefined {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'object') throw new SemanticConfigError(`${file}: metrics[${metricIndex}].${side} must be a mapping`)
+  const entry = raw as Record<string, unknown>
+  return {
+    ...(assertOptionalIdent(entry.metric, `${file}: metrics[${metricIndex}].${side}.metric`) !== undefined ? { metric: entry.metric as string } : {}),
+    ...(assertOptionalIdent(entry.entity, `${file}: metrics[${metricIndex}].${side}.entity`) !== undefined ? { entity: entry.entity as string } : {}),
+    ...(assertOptionalIdent(entry.measure, `${file}: metrics[${metricIndex}].${side}.measure`) !== undefined ? { measure: entry.measure as string } : {}),
+    ...(entry.agg !== undefined && (typeof entry.agg === 'string' && (METRIC_AGGS as readonly string[]).includes(entry.agg))
+      ? { agg: entry.agg as MetricAgg }
+      : {}),
+    ...(assertOptionalStringArray(entry.filters, `${file}: metrics[${metricIndex}].${side}.filters`, true) !== undefined ? { filters: entry.filters as string[] } : {}),
+  }
+}
+
 function parseMetric(raw: unknown, index: number, file: string): RawMetric {
   if (raw === null || typeof raw !== 'object') throw new SemanticConfigError(`${file}: metrics[${index}] must be a mapping`)
   const entry = raw as Record<string, unknown>
@@ -183,6 +223,9 @@ function parseMetric(raw: unknown, index: number, file: string): RawMetric {
   if (agg === undefined && !inheriting) {
     throw new SemanticConfigError(`${file}: metrics[${index}].agg is required (or use extends to inherit one)`)
   }
+  const numerator = parseMetricRef(entry.numerator, file, index, 'numerator')
+  const denominator = parseMetricRef(entry.denominator, file, index, 'denominator')
+  const joins = assertOptionalStringArray(entry.joins, `${file}: metrics[${index}].joins`, false)
   return {
     name,
     ...(extendsName !== undefined ? { extends: extendsName } : {}),
@@ -201,6 +244,10 @@ function parseMetric(raw: unknown, index: number, file: string): RawMetric {
     ...(assertOptionalIdent(entry.timeField, `${file}: metrics[${index}].timeField`) !== undefined
       ? { timeField: entry.timeField as string }
       : {}),
+    ...(optionalString(entry.expression) !== undefined ? { expression: String(entry.expression) } : {}),
+    ...(numerator !== undefined ? { numerator } : {}),
+    ...(denominator !== undefined ? { denominator } : {}),
+    ...(joins !== undefined && joins.length > 0 ? { joins } : {}),
     dimensions: assertOptionalStringArray(entry.dimensions, `${file}: metrics[${index}].dimensions`, false),
     filters: assertOptionalStringArray(entry.filters, `${file}: metrics[${index}].filters`, true),
     ...(optionalString(entry.unit) !== undefined ? { unit: String(entry.unit) } : {}),
@@ -233,6 +280,26 @@ function pick<K extends keyof SemanticMetric>(chain: readonly RawMetric[], key: 
     if (value !== undefined) return value as SemanticMetric[K]
   }
   return undefined
+}
+
+/** Set of entity tables reachable from `start` via `relationships` (BFS, ≤3 hops). */
+function reachableEntities(start: string, entities: Map<string, { entity: SemanticEntity, file: string }>): Set<string> {
+  const seen = new Set<string>([start])
+  let frontier = [start]
+  for (let depth = 0; depth < 3 && frontier.length > 0; depth++) {
+    const next: string[] = []
+    for (const current of frontier) {
+      const node = entities.get(current)
+      for (const rel of node?.entity.relationships ?? []) {
+        if (!seen.has(rel.entity)) {
+          seen.add(rel.entity)
+          next.push(rel.entity)
+        }
+      }
+    }
+    frontier = next
+  }
+  return seen
 }
 
 const COLLECTIONS = { entity: 'entities', term: 'terms', metric: 'metrics' } as const
@@ -332,8 +399,31 @@ export function composeSemantic(fragments: readonly LoadedFragment[]): ComposeRe
       throw new SemanticConfigError(`metrics["${name}"] (${entry.file}): 缺少 agg,且继承链上没有定义 agg 的基础指标`)
     }
     const measure = pick(chain, 'measure')
-    if (agg !== 'count' && measure === undefined) {
+    if (agg !== 'count' && agg !== 'ratio' && agg !== 'expression' && measure === undefined) {
       throw new SemanticConfigError(`metrics["${name}"] (${entry.file}): agg "${agg}" 需要 measure(继承链上也没有)`)
+    }
+    if (agg === 'ratio') {
+      const num = pick(chain, 'numerator')
+      const den = pick(chain, 'denominator')
+      if (num === undefined || den === undefined) {
+        throw new SemanticConfigError(`metrics["${name}"] (${entry.file}): agg "ratio" 需要 numerator 与 denominator`)
+      }
+    }
+    if (agg === 'expression') {
+      const expression = pick(chain, 'expression')
+      if (expression === undefined) {
+        throw new SemanticConfigError(`metrics["${name}"] (${entry.file}): agg "expression" 需要 expression 字段`)
+      }
+    }
+    // joins must be reachable from this entity via relationships (BFS, depth ≤ 3).
+    const joins = pick(chain, 'joins')
+    if (joins !== undefined && joins.length > 0) {
+      const reachable = reachableEntities(entityName, entities)
+      for (const join of joins) {
+        if (!reachable.has(join)) {
+          throw new SemanticConfigError(`metrics["${name}"] (${entry.file}): joins 包含不可达实体 "${join}"（需通过 entities 的 relationships 串联,当前实体 "${entityName}" 仅能到达: ${[...reachable].join('/') || '(无)'})`)
+        }
+      }
     }
 
     const timeField = pick(chain, 'timeField') ?? entity.entity.timeField ?? defaults.timeField
@@ -361,11 +451,26 @@ export function composeSemantic(fragments: readonly LoadedFragment[]): ComposeRe
       ...(dimensions !== undefined && dimensions.length > 0 ? { dimensions } : {}),
       ...(filters.length > 0 ? { filters } : {}),
       ...(pick(chain, 'unit') !== undefined ? { unit: pick(chain, 'unit') as string } : {}),
+      ...(joins !== undefined && joins.length > 0 ? { joins } : {}),
+      ...(agg === 'ratio' ? {
+        numerator: pick(chain, 'numerator') as NonNullable<SemanticMetric['numerator']>,
+        denominator: pick(chain, 'denominator') as NonNullable<SemanticMetric['denominator']>,
+      } : {}),
+      ...(agg === 'expression' ? { expression: pick(chain, 'expression') as string } : {}),
     })
   }
 
   for (const [table, entry] of entities) origins[`entity:${table}`] = entry.file
   for (const [termName, entry] of terms) origins[`term:${termName}`] = entry.file
+
+  // --- relationship / RLS structural validation (one pass over entities) ---
+  for (const [table, entry] of entities) {
+    for (const rel of entry.entity.relationships ?? []) {
+      if (!entities.has(rel.entity)) {
+        throw new SemanticConfigError(`entities["${table}"] (${entry.file}): relationship 指向未定义实体 "${rel.entity}"`)
+      }
+    }
+  }
 
   const config: SemanticConfig = {
     ...(Object.keys(defaults).length > 0 ? { defaults } : {}),

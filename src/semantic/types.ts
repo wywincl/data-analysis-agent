@@ -38,7 +38,7 @@
  */
 
 /** Aggregations a metric may apply to its measure. */
-export type MetricAgg = 'sum' | 'count' | 'avg' | 'min' | 'max' | 'count_distinct'
+export type MetricAgg = 'sum' | 'count' | 'avg' | 'min' | 'max' | 'count_distinct' | 'ratio' | 'expression'
 
 /**
  * Fields every level of the hierarchy may contribute downward. Declared once
@@ -58,6 +58,14 @@ export interface SemanticInherited {
 /** Root-level defaults, inherited by every entity and metric. */
 export interface SemanticDefaults extends SemanticInherited {}
 
+/** A foreign key from this entity to a related entity, enabling cross-table metrics. */
+export interface SemanticRelationship {
+  /** Related entity (table) name; must resolve to a defined `entities` entry. */
+  entity: string
+  /** `[thisColumn, relatedColumn]` — the join condition (both validated identifiers). */
+  on: [string, string]
+}
+
 /** MEANING: one physical table plus its business labels. */
 export interface SemanticEntity extends SemanticInherited {
   /** Physical table name (validated identifier). */
@@ -72,7 +80,19 @@ export interface SemanticEntity extends SemanticInherited {
     label?: string
     description?: string
     unit?: string
+    /** Mark PII/sensitive columns — masked in results unless the role may read them. */
+    sensitive?: boolean
   }[]
+  /** Foreign keys to other entities; lets a metric join across tables. */
+  relationships?: SemanticRelationship[]
+  /**
+   * Row-level security predicate AND-ed into every query on this entity.
+   * The literal `{role}` is replaced with the configured `currentRole`
+   * (`config.currentRole`). Trusted (operator-authored) SQL.
+   */
+  rowFilter?: string
+  /** Roles allowed to read this entity's sensitive columns and skip `rowFilter`. */
+  readRoles?: string[]
 }
 
 /** TERM: one business term with aliases for口径 consistency. */
@@ -80,6 +100,19 @@ export interface SemanticTerm {
   name: string
   aliases?: string[]
   description: string
+}
+
+/** One side of a ratio metric: an inline aggregate or a reference to another metric. */
+export interface MetricRef {
+  /** Metric id to reuse (its entity/agg/measure/filters are inlined). */
+  metric?: string
+  /** Override the entity (table) for an inline aggregate. */
+  entity?: string
+  /** Measure column for an inline aggregate. */
+  measure?: string
+  agg?: MetricAgg
+  /** Extra口径 predicates AND-ed into this side only. */
+  filters?: string[]
 }
 
 /** METRIC: one executable, governed metric definition. */
@@ -90,9 +123,24 @@ export interface SemanticMetric extends SemanticInherited {
   description?: string
   /** Entity (table) this metric aggregates; must exist in `entities`. */
   entity: string
-  /** Measure column; required for every agg except `count`. */
+  /** Measure column; required for every agg except `count`/`ratio`/`expression`. */
   measure?: string
   agg: MetricAgg
+  /**
+   * `ratio` → `numerator`/`denominator` (metric refs or inline aggregates)
+   * combined as num / NULLIF(den, 0). `expression` → `expression` is used
+   * verbatim as the aggregate (trusted, operator-authored SQL fragment).
+   */
+  numerator?: MetricRef
+  denominator?: MetricRef
+  /** Trusted SQL expression used as the measure when `agg === 'expression'`. */
+  expression?: string
+  /**
+   * Related entities to JOIN into the metric (names must be reachable from
+   * this entity via `relationships`). Dimensions/filters/measure may then
+   * reference joined columns as `Entity.column`.
+   */
+  joins?: string[]
   /**
    * Inherit from another metric by name. The base contributes everything the
    * metric does not declare itself; `filters` from both are AND-ed. Resolved
@@ -113,7 +161,7 @@ export interface SemanticConfig {
   metrics?: SemanticMetric[]
 }
 
-export const METRIC_AGGS: readonly MetricAgg[] = ['sum', 'count', 'avg', 'min', 'max', 'count_distinct']
+export const METRIC_AGGS: readonly MetricAgg[] = ['sum', 'count', 'avg', 'min', 'max', 'count_distinct', 'ratio', 'expression']
 
 /** One resolved metric lookup (metric + its entity + effective datasource). */
 export interface ResolvedMetric {
@@ -141,6 +189,15 @@ export type LintCode =
   | 'metric-shadows-term'
   | 'unbounded-metric'
   | 'missing-label'
+  | 'unknown-relationship-entity'
+  | 'relationship-column-missing'
+  | 'unknown-join-entity'
+  | 'join-unreachable'
+  | 'ratio-missing-sides'
+  | 'ratio-unknown-metric'
+  | 'expression-missing'
+  | 'drift-table-missing'
+  | 'drift-column-missing'
 
 /**
  * One non-fatal problem found in an otherwise loadable semantic config.

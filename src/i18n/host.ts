@@ -40,6 +40,11 @@ export interface HostStrings {
   'cmd.data-semantic-lint.fail': string
   'cmd.data-semantic-lint.pass': string
   'cmd.data-semantic-lint.warnings': string
+  'cmd.data-semantic-validate.desc': string
+  'cmd.data-semantic-validate.noFile': string
+  'cmd.data-semantic-validate.loadFail': string
+  'cmd.data-semantic-validate.pass': string
+  'cmd.data-semantic-validate.warnings': string
   'cmd.data-schema.desc': string
   'cmd.data-schema.usage': string
   'cmd.data-schema.notFound': string
@@ -104,6 +109,24 @@ export interface HostStrings {
   'lint.unbounded-metric.hint': string
   'lint.missing-label.message': string
   'lint.missing-label.hint': string
+  'lint.unknown-relationship-entity.message': string
+  'lint.unknown-relationship-entity.hint': string
+  'lint.relationship-column-missing.message': string
+  'lint.relationship-column-missing.hint': string
+  'lint.unknown-join-entity.message': string
+  'lint.unknown-join-entity.hint': string
+  'lint.join-unreachable.message': string
+  'lint.join-unreachable.hint': string
+  'lint.ratio-missing-sides.message': string
+  'lint.ratio-missing-sides.hint': string
+  'lint.ratio-unknown-metric.message': string
+  'lint.ratio-unknown-metric.hint': string
+  'lint.expression-missing.message': string
+  'lint.expression-missing.hint': string
+  'lint.drift-table-missing.message': string
+  'lint.drift-table-missing.hint': string
+  'lint.drift-column-missing.message': string
+  'lint.drift-column-missing.hint': string
   'tool.render_chart.cardPrefix': string
   'tool.analyze_data.cardPrefix': string
   'config.validate.gte': string
@@ -147,6 +170,11 @@ export const zh: HostStrings = {
   'cmd.data-semantic-lint.fail': '语义层加载失败（当前沿用上一次有效配置）:\n{err}\n{header}',
   'cmd.data-semantic-lint.pass': '✓ 语义层体检通过\n{header}',
   'cmd.data-semantic-lint.warnings': '⚠️ 语义层体检 {count} 条提示（不阻塞查询）\n{header}\n\n{lines}',
+  'cmd.data-semantic-validate.desc': '将语义层与实时库内 schema 比对,抓出漂移(被改名/删除的表或列)',
+  'cmd.data-semantic-validate.noFile': '未配置语义层文件 — 在工作台卡片或配置中设置 semanticFile。',
+  'cmd.data-semantic-validate.loadFail': '语义层加载失败,无法校验:\n{err}',
+  'cmd.data-semantic-validate.pass': '✓ 语义层与 {count} 个数据源的实时 schema 一致,无漂移。',
+  'cmd.data-semantic-validate.warnings': '⚠️ 语义层漂移校验发现 {count} 处问题:\n\n{lines}',
   'cmd.data-schema.desc': '显示数据源的表/列',
   'cmd.data-schema.usage': '用法: /data-schema <datasource> [table]',
   'cmd.data-schema.notFound': '在 "{ds}" 中未找到表 "{table}"。',
@@ -208,6 +236,24 @@ export const zh: HostStrings = {
   'lint.unbounded-metric.hint': '补上 timeField 以支持时间范围,或在 filters 里限定口径',
   'lint.missing-label.message': '{count} 个指标缺少 label,模型只能看到 id: {names}',
   'lint.missing-label.hint': 'label 是指标在目录和提示词里的中文名,建议补齐',
+  'lint.unknown-relationship-entity.message': '实体 "{entity}" 的 relationships 指向未定义实体 "{target}"',
+  'lint.unknown-relationship-entity.hint': '检查 relationships[].entity 是否拼写正确,且目标实体已在 entities 中定义',
+  'lint.relationship-column-missing.message': '实体 "{entity}" 的 relationships 外键列 "{column}" 未在其 columns 中声明',
+  'lint.relationship-column-missing.hint': '在实体 columns 中补齐外键列,或在 relationships.on 使用已存在的列',
+  'lint.unknown-join-entity.message': '指标 "{metric}" 的 joins 包含未知实体 "{target}"',
+  'lint.unknown-join-entity.hint': 'joins 只能引用 entities 中已定义的实体',
+  'lint.join-unreachable.message': '指标 "{metric}" 的 joins 包含不可达实体 "{target}"',
+  'lint.join-unreachable.hint': '需通过 entities 的 relationships 串联(本实体 → 关系实体 → …);中间实体也要列进 joins',
+  'lint.ratio-missing-sides.message': 'ratio 指标 "{metric}" 缺少 numerator 或 denominator',
+  'lint.ratio-missing-sides.hint': 'ratio 需要两个侧边: numerator 与 denominator(各自可引用指标或内联 agg/measure)',
+  'lint.ratio-unknown-metric.message': 'ratio 指标 "{metric}" 引用了未定义指标 "{target}"',
+  'lint.ratio-unknown-metric.hint': 'numerator/denominator.metric 必须是已定义的指标 id',
+  'lint.expression-missing.message': 'expression 指标 "{metric}" 缺少 expression 字段',
+  'lint.expression-missing.hint': 'expression 是可信的 SQL 片段,直接作为聚合度量使用',
+  'lint.drift-table-missing.message': '实体表 "{table}" 在数据源 "{datasource}" 中不存在',
+  'lint.drift-table-missing.hint': '表可能已被改名或删除;同步语义层或修正 entity.table',
+  'lint.drift-column-missing.message': '列 "{column}" 在表 "{table}" 中不存在',
+  'lint.drift-column-missing.hint': '列可能已漂移(改名/删除);同步语义层定义',
   'tool.render_chart.cardPrefix': '图表',
   'tool.analyze_data.cardPrefix': '分析',
   'config.validate.gte': '{field} 必须 >= {min}',
@@ -251,6 +297,11 @@ export const en: HostStrings = {
   'cmd.data-semantic-lint.fail': 'Semantic layer load failed (currently using last good config):\n{err}\n{header}',
   'cmd.data-semantic-lint.pass': '✓ Semantic layer health-check passed\n{header}',
   'cmd.data-semantic-lint.warnings': '⚠️ Semantic layer health-check: {count} warnings (non-blocking)\n{header}\n\n{lines}',
+  'cmd.data-semantic-validate.desc': 'Compare the semantic layer against the live schema to catch drift (renamed/dropped tables or columns)',
+  'cmd.data-semantic-validate.noFile': 'No semantic file configured — set semanticFile in the workbench card or plugin config.',
+  'cmd.data-semantic-validate.loadFail': 'Semantic layer failed to load, cannot validate:\n{err}',
+  'cmd.data-semantic-validate.pass': '✓ Semantic layer matches the live schema of {count} datasource(s) — no drift.',
+  'cmd.data-semantic-validate.warnings': '⚠️ Semantic drift check found {count} issue(s):\n\n{lines}',
   'cmd.data-schema.desc': 'Show tables/columns of a data source',
   'cmd.data-schema.usage': 'Usage: /data-schema <datasource> [table]',
   'cmd.data-schema.notFound': 'Table "{table}" not found in "{ds}".',
@@ -312,6 +363,24 @@ export const en: HostStrings = {
   'lint.unbounded-metric.hint': 'Add a timeField to support range filters, or constrain the口径 in filters',
   'lint.missing-label.message': '{count} metric(s) have no label, so the model only sees the id: {names}',
   'lint.missing-label.hint': 'label is the human name shown in the catalog and the prompt — worth filling in',
+  'lint.unknown-relationship-entity.message': 'entity "{entity}" relationships point to an undefined entity "{target}"',
+  'lint.unknown-relationship-entity.hint': 'check relationships[].entity spelling and that the target entity is defined in entities',
+  'lint.relationship-column-missing.message': 'entity "{entity}" relationship FK column "{column}" is not declared in its columns',
+  'lint.relationship-column-missing.hint': 'declare the FK column in the entity columns, or use an existing column in relationships.on',
+  'lint.unknown-join-entity.message': 'metric "{metric}" joins references an unknown entity "{target}"',
+  'lint.unknown-join-entity.hint': 'joins can only reference entities defined in entities',
+  'lint.join-unreachable.message': 'metric "{metric}" joins includes an unreachable entity "{target}"',
+  'lint.join-unreachable.hint': 'reach it through entities relationships (this → related → …); list intermediate entities in joins too',
+  'lint.ratio-missing-sides.message': 'ratio metric "{metric}" is missing numerator or denominator',
+  'lint.ratio-missing-sides.hint': 'ratio needs two sides: numerator and denominator (each can reference a metric or inline agg/measure)',
+  'lint.ratio-unknown-metric.message': 'ratio metric "{metric}" references an undefined metric "{target}"',
+  'lint.ratio-unknown-metric.hint': 'numerator/denominator.metric must be a defined metric id',
+  'lint.expression-missing.message': 'expression metric "{metric}" is missing the expression field',
+  'lint.expression-missing.hint': 'expression is a trusted SQL fragment used verbatim as the aggregate measure',
+  'lint.drift-table-missing.message': 'entity table "{table}" does not exist in datasource "{datasource}"',
+  'lint.drift-table-missing.hint': 'the table may have been renamed or dropped; sync the semantic layer or fix entity.table',
+  'lint.drift-column-missing.message': 'column "{column}" does not exist on table "{table}"',
+  'lint.drift-column-missing.hint': 'the column may have drifted (renamed/dropped); sync the semantic layer definition',
   'tool.render_chart.cardPrefix': 'Chart',
   'tool.analyze_data.cardPrefix': 'Analysis',
   'config.validate.gte': '{field} must be >= {min}',
