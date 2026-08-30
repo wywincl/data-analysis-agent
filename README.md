@@ -1,8 +1,8 @@
-# dsh-rd-data-analysis
+# dsh-data-agent
 
-**DeepSeek Harness 数据库工作台 & 数据分析智能体插件**
+**Data Agent plugin for DeepSeek Harness**
 
-面向 [deepseek-harness (`dsh`)](https://github.com/deepseek-ai/deepseek-harness) 的数据库工作台与数据分析智能体平台插件。提供多数据源接入、自然语言 text2SQL（带解析级护栏）、声明式语义层（热加载）、Web 工作台连接管理、对话内交互式 ECharts 可视化、内置统计分析及自包含 HTML 图表导出。基于官方插件开发指南构建，采用双面插件（Host 半 + Browser 半），不修改官方仓库任何代码。
+面向 [deepseek-harness (`dsh`)](https://github.com/deepseek-ai/deepseek-harness) 的数据分析智能体插件。提供多数据源接入、自然语言 text2SQL（带解析级护栏）、声明式语义层（热加载）、Web 工作台连接管理、对话内交互式 ECharts 可视化、内置统计分析及自包含 HTML 图表导出。基于官方插件开发指南构建，采用双面插件（Host 半 + Browser 半），不修改官方仓库任何代码。
 
 > 状态：已在本地 dsh 源码上完成端到端实测（真实对话 → 工具链 → 图表渲染 → 导出 → 重启重放 → 工作台热配置）。48 个单元/集成测试全绿。
 
@@ -245,7 +245,7 @@ metrics:
 ## 目录结构
 
 ```
-rd-data-agent/
+data-agent/
 ├── package.json / cordis.patch.yml   # bundle 清单（dsh.bundle + dsh.client）
 ├── scripts/build.mjs                 # esbuild 双半构建（node ESM + client 工厂产物）
 ├── scripts/link-dsh.mjs              # dev:@deepseek-ai/* 符号链接到 dsh checkout

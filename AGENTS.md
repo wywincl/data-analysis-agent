@@ -4,8 +4,8 @@ This file provides context and instructions for AI coding agents working in this
 
 ## Project Identity
 
-- **Package**: `dsh-rd-data-analysis`
-- **Description**: DeepSeek Harness 数据库工作台 & 数据分析智能体插件
+- **Package**: `dsh-data-agent`
+- **Description**: Data Agent plugin for DeepSeek Harness
 - **Runtime**: Node.js ESM (TypeScript)
 - **Build**: esbuild (dual-half: Node ESM + client factory artifact)
 
