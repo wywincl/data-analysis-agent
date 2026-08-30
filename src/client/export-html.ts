@@ -4,7 +4,7 @@
  * The HTML artifact embeds the echarts UMD bundle verbatim (built-time text
  * import — no CDN, opens offline) and the chart's option as escaped JSON.
  *
- * @module dsh-rd-data-analysis/client/export-html
+ * @module dsh-data-analysis/client/export-html
  */
 
 import type { RdChartEvent } from '../events.ts'

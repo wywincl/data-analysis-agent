@@ -8,7 +8,7 @@
  * append all rebuild the same node without scanning the session window. The
  * renderer consumes only `node.data` — see the Conversation Node cookbook.
  *
- * @module dsh-rd-data-analysis/client/definition
+ * @module dsh-data-analysis/client/definition
  */
 
 import type { ChatConversationViewNode, ConversationNodeDefinition } from '@deepseek-ai/dsh-client-runtime/client'

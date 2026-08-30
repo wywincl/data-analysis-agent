@@ -1,7 +1,7 @@
 /**
  * Shared model-facing text rendering helpers for tools and commands.
  *
- * @module dsh-rd-data-analysis/tools/text
+ * @module dsh-data-analysis/tools/text
  */
 
 import type { JsonValue } from '@deepseek-ai/dsh-session'

@@ -6,7 +6,7 @@
  * patch layer with `!!js` expressions so secrets never live in the source
  * tree, e.g.  password: !!js process.env.MYSQL_PASSWORD
  *
- * @module dsh-rd-data-analysis/config
+ * @module dsh-data-analysis/config
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -186,39 +186,39 @@ export function validateConfig(config: Config): void {
   const gte = (field: string, min: number): string => tpl(s['config.validate.gte'], { field, min: String(min) })
   const gteMs = (field: string, min: number): string => tpl(s['config.validate.gteMs'], { field, min: String(min) })
 
-  if (config.defaultMaxRows < 1) throw new Error(`rd-data-analysis: ${gte('defaultMaxRows', 1)}`)
-  if (config.defaultTimeoutMs < 100) throw new Error(`rd-data-analysis: ${gteMs('defaultTimeoutMs', 100)}`)
-  if (config.modelRowCap < 1) throw new Error(`rd-data-analysis: ${gte('modelRowCap', 1)}`)
-  if (config.chartDataCap < 1) throw new Error(`rd-data-analysis: ${gte('chartDataCap', 1)}`)
-  if (config.schemaCacheTtlMs < 0) throw new Error(`rd-data-analysis: ${gte('schemaCacheTtlMs', 0)}`)
-  if (config.resultCacheSize < 1) throw new Error(`rd-data-analysis: ${gte('resultCacheSize', 1)}`)
-  if (config.resultCacheTtlMs < 0) throw new Error(`rd-data-analysis: ${gte('resultCacheTtlMs', 0)}`)
-  if (config.asyncJobCacheSize < 1) throw new Error(`rd-data-analysis: ${gte('asyncJobCacheSize', 1)}`)
-  if (config.auditMaxEntries < 0) throw new Error(`rd-data-analysis: ${gte('auditMaxEntries', 0)}`)
-  if (config.asyncJobTtlMs < 0) throw new Error(`rd-data-analysis: ${gte('asyncJobTtlMs', 0)}`)
+  if (config.defaultMaxRows < 1) throw new Error(`data-analysis: ${gte('defaultMaxRows', 1)}`)
+  if (config.defaultTimeoutMs < 100) throw new Error(`data-analysis: ${gteMs('defaultTimeoutMs', 100)}`)
+  if (config.modelRowCap < 1) throw new Error(`data-analysis: ${gte('modelRowCap', 1)}`)
+  if (config.chartDataCap < 1) throw new Error(`data-analysis: ${gte('chartDataCap', 1)}`)
+  if (config.schemaCacheTtlMs < 0) throw new Error(`data-analysis: ${gte('schemaCacheTtlMs', 0)}`)
+  if (config.resultCacheSize < 1) throw new Error(`data-analysis: ${gte('resultCacheSize', 1)}`)
+  if (config.resultCacheTtlMs < 0) throw new Error(`data-analysis: ${gte('resultCacheTtlMs', 0)}`)
+  if (config.asyncJobCacheSize < 1) throw new Error(`data-analysis: ${gte('asyncJobCacheSize', 1)}`)
+  if (config.auditMaxEntries < 0) throw new Error(`data-analysis: ${gte('auditMaxEntries', 0)}`)
+  if (config.asyncJobTtlMs < 0) throw new Error(`data-analysis: ${gte('asyncJobTtlMs', 0)}`)
 
   const names = new Set<string>()
   for (const ds of config.dataSources) {
-    if (names.has(ds.name)) throw new Error(`rd-data-analysis: duplicate datasource name "${ds.name}"`)
+    if (names.has(ds.name)) throw new Error(`data-analysis: duplicate datasource name "${ds.name}"`)
     names.add(ds.name)
     if (ds.maxRows !== undefined && ds.maxRows < 1) {
-      throw new Error(`rd-data-analysis: ${tpl(s['config.validate.gte'], { field: `datasource "${ds.name}" maxRows`, min: '1' })}`)
+      throw new Error(`data-analysis: ${tpl(s['config.validate.gte'], { field: `datasource "${ds.name}" maxRows`, min: '1' })}`)
     }
     if (ds.timeoutMs !== undefined && ds.timeoutMs < 100) {
-      throw new Error(`rd-data-analysis: ${tpl(s['config.validate.gteMs'], { field: `datasource "${ds.name}" timeoutMs`, min: '100' })}`)
+      throw new Error(`data-analysis: ${tpl(s['config.validate.gteMs'], { field: `datasource "${ds.name}" timeoutMs`, min: '100' })}`)
     }
     if (ds.type === 'sqlite' && !ds.file) {
-      throw new Error(`rd-data-analysis: datasource "${ds.name}" (sqlite) requires "file"`)
+      throw new Error(`data-analysis: datasource "${ds.name}" (sqlite) requires "file"`)
     }
     if ((ds.type === 'mysql' || ds.type === 'postgres' || ds.type === 'clickhouse') && (!ds.host || !ds.database)) {
-      throw new Error(`rd-data-analysis: datasource "${ds.name}" (${ds.type}) requires "host" and "database"`)
+      throw new Error(`data-analysis: datasource "${ds.name}" (${ds.type}) requires "host" and "database"`)
     }
     if (ds.type === 'spark' && ds.sparkMock === false && !ds.livyUrl) {
-      throw new Error(`rd-data-analysis: datasource "${ds.name}" (spark, real backend) requires "livyUrl"`)
+      throw new Error(`data-analysis: datasource "${ds.name}" (spark, real backend) requires "livyUrl"`)
     }
   }
   if (config.defaultDatasource !== '' && !names.has(config.defaultDatasource)) {
-    throw new Error(`rd-data-analysis: ${tpl(s['config.validate.defaultDatasource'], { name: config.defaultDatasource, list: [...names].join(', ') || 'none' })}`)
+    throw new Error(`data-analysis: ${tpl(s['config.validate.defaultDatasource'], { name: config.defaultDatasource, list: [...names].join(', ') || 'none' })}`)
   }
 }
 
@@ -231,6 +231,6 @@ export function limitsFor(config: Config, ds: DataSourceConfig | undefined): { m
 }
 
 /** Plugin identity shared by host and client halves. */
-export const PLUGIN_NAME = 'rd-data-analysis'
+export const PLUGIN_NAME = 'data-analysis'
 
 export type PluginContext = Context

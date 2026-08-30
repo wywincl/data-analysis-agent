@@ -10,7 +10,7 @@
  *  - T4 scaffold: "generate from datasource" introspects a connection and
  *    scaffolds a starter layer.
  *
- * @module dsh-rd-data-analysis/client/semantic-section
+ * @module dsh-data-analysis/client/semantic-section
  */
 
 import { useEffect, useState, type ReactNode } from 'react'

@@ -7,7 +7,7 @@
  * engine is reachable and authenticated; anything the driver throws
  * (DNS, auth, TLS, timeout) surfaces as an offline status with the message.
  *
- * @module dsh-rd-data-analysis/datasources/probe
+ * @module dsh-data-analysis/datasources/probe
  */
 
 import type { DataSourceProvider } from '../types.ts'

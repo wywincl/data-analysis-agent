@@ -9,7 +9,7 @@
  * type, so the chart stays replayable everywhere and unknown-embedded
  * metadata costs nothing.
  *
- * @module dsh-rd-data-analysis/events
+ * @module dsh-data-analysis/events
  */
 
 import type { JsonValue } from '@deepseek-ai/dsh-session'

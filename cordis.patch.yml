@@ -1,9 +1,9 @@
-# The dsh-rd-data-analysis bundle patch: multi-datasource analysis agent over
+# The dsh-data-analysis bundle patch: multi-datasource analysis agent over
 # dsh-base. Mounts the host data plane (tools, guard, registry, commands,
 # approval gate, system-prompt workflow) and lets the client module system
 # pick up the browser half from this package's `./client` export.
 # Rows here can be overridden by later layers (profile / --patch) by id.
 
 - insert:
-    - id: rd-data-analysis
-      name: dsh-rd-data-analysis
+    - id: data-analysis
+      name: dsh-data-analysis

@@ -73,7 +73,7 @@ npm i -D playwright && npx playwright install chromium
 ### 插件配置
 
 ```yaml
-- id: rd-data-analysis
+- id: data-analysis
   config:
     semanticFile: /path/to/semantic.yaml   # 语义层配置（可选，热加载）
     defaultMaxRows: 500          # 单查询行上限（注入 LIMIT + 硬截断）

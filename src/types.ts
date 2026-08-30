@@ -5,7 +5,7 @@
  * turns model chart intent into a complete ECharts option and emits a durable
  * `rd/chart` session event (see ./events.ts) that the browser half renders.
  *
- * @module dsh-rd-data-analysis/types
+ * @module dsh-data-analysis/types
  */
 
 import type { JsonValue } from '@deepseek-ai/dsh-session'

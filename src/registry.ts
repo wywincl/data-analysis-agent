@@ -40,7 +40,7 @@ export class DataSourceRegistry {
 
   register(provider: import('./types.ts').DataSourceProvider): () => void {
     if (this.providers.has(provider.name)) {
-      throw new Error(`rd-data-analysis: datasource "${provider.name}" registered twice`)
+      throw new Error(`data-analysis: datasource "${provider.name}" registered twice`)
     }
     this.providers.set(provider.name, provider)
     return () => { this.providers.delete(provider.name) }

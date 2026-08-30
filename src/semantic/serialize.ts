@@ -6,7 +6,7 @@
  * hand-authored multi-file setup. These helpers write that file and, when a
  * root file exists, non-destructively add it to the root's `include` list.
  *
- * @module dsh-rd-data-analysis/semantic/serialize
+ * @module dsh-data-analysis/semantic/serialize
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'

@@ -11,7 +11,7 @@
  * filters, dimensions and relationships are left for the operator to refine —
  * the lint engine will surface anything undefined.
  *
- * @module dsh-rd-data-analysis/semantic/scaffold
+ * @module dsh-data-analysis/semantic/scaffold
  */
 
 import type { SchemaInfo, TableInfo } from '../types.ts'

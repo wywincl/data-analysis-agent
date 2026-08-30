@@ -17,7 +17,7 @@
  * KPI charts have no real ECharts option; they are rendered as a simple
  * standalone SVG stat card instead.
  *
- * @module dsh-rd-data-analysis/charts/server-render
+ * @module dsh-data-analysis/charts/server-render
  */
 
 import type { JsonValue } from '@deepseek-ai/dsh-session'
@@ -39,7 +39,7 @@ let echartsCache: EChartsLike | undefined
 function loadEcharts(echartsUmd: string | undefined): EChartsLike {
   if (echartsCache !== undefined) return echartsCache
   if (echartsUmd === undefined || echartsUmd === '') {
-    throw new Error('rd-data-analysis: server-side rendering needs the echarts UMD text (pass opts.echartsUmd).')
+    throw new Error('data-analysis: server-side rendering needs the echarts UMD text (pass opts.echartsUmd).')
   }
   // The UMD wrapper prefers CommonJS (`typeof exports === 'object'`) — provide
   // a module/exports pair so it populates our object deterministically.
@@ -49,7 +49,7 @@ function loadEcharts(echartsUmd: string | undefined): EChartsLike {
   )
   const mod = { exports: {} as Record<string, unknown> }
   const ec = factory(mod) as EChartsLike
-  if (typeof ec?.init !== 'function') throw new Error('rd-data-analysis: failed to evaluate the embedded echarts UMD bundle.')
+  if (typeof ec?.init !== 'function') throw new Error('data-analysis: failed to evaluate the embedded echarts UMD bundle.')
   echartsCache = ec
   return ec
 }
@@ -127,7 +127,7 @@ export async function renderChartImage(option: Record<string, JsonValue>, opts: 
   try {
     chart.setOption(prepared)
     if (typeof chart.renderToSVGString !== 'function') {
-      throw new Error('rd-data-analysis: embedded echarts has no SSR SVG renderer.')
+      throw new Error('data-analysis: embedded echarts has no SSR SVG renderer.')
     }
     return { kind: 'svg', svg: chart.renderToSVGString(), width, height }
   } finally {

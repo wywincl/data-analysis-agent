@@ -4,7 +4,7 @@
  * own dependency-free module so the browser half can import the type without
  * pulling in server-only runtime imports.
  *
- * @module dsh-rd-data-analysis/health
+ * @module dsh-data-analysis/health
  */
 
 /** Result of one connectivity probe for a datasource. */

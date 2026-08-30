@@ -9,7 +9,7 @@
 # resolve through data-agent/node_modules (scripts/link-dsh.mjs).
 
 - insert:
-    - id: rd-data-analysis
+    - id: data-analysis
       name: '/Users/wang.yang/ZCodeProject/data-agent/lib/index.js'
       config:
         dataSources:

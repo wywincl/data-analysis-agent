@@ -14,7 +14,7 @@
  * The browser half (./client) registers the chart Conversation Node and the
  * workbench settings card.
  *
- * @module dsh-rd-data-analysis
+ * @module dsh-data-analysis
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -93,7 +93,7 @@ function createProvider(ds: ConfigType['dataSources'][number]): import('./types.
       // v1 default: mock. Set sparkMock:false + livyUrl to use a real Livy
       // REST backend (same DataSourceProvider seam).
       if (ds.sparkMock === false) {
-        if (ds.livyUrl === undefined) throw new Error(`rd-data-analysis: spark datasource "${ds.name}" has sparkMock:false but no livyUrl`)
+        if (ds.livyUrl === undefined) throw new Error(`data-analysis: spark datasource "${ds.name}" has sparkMock:false but no livyUrl`)
         return createSparkLivyProvider(ds.name, { livyUrl: ds.livyUrl, ...(ds.user !== undefined ? { user: ds.user } : {}) })
       }
       return createSparkMockProvider(ds.name)
@@ -360,7 +360,7 @@ export function apply(ctx: Context, config: ConfigType): void {
   // The section text is evaluated at each assembly, so semantic-layer terms
   // and metrics stay current across hot reloads without a plugin reload.
   ctx.systemPrompt.section({
-    name: 'rd-data-analysis-workflow',
+    name: 'data-analysis-workflow',
     order: 110,
     text: () => {
       const digest = semantic.promptDigest()

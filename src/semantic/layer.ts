@@ -11,7 +11,7 @@
  * go through the guard's identifier check, values are bound as escaped
  * literals. The built SQL also passes `guardSelectOnly` before execution.
  *
- * @module dsh-rd-data-analysis/semantic/layer
+ * @module dsh-data-analysis/semantic/layer
  */
 
 import { readdirSync, statSync, watch, type FSWatcher } from 'node:fs'

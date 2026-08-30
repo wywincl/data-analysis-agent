@@ -8,7 +8,7 @@
  * This runs on demand (the `data-semantic-validate` command) because it needs a
  * live connection, not at compose time.
  *
- * @module dsh-rd-data-analysis/semantic/drift
+ * @module dsh-data-analysis/semantic/drift
  */
 
 import type { SchemaInfo } from '../types.ts'

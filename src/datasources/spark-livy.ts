@@ -16,7 +16,7 @@
  * Spark Connect (gRPC) would implement the same interface with a Python
  * sidecar; Livy is chosen here because it is the lowest-friction real path.
  *
- * @module dsh-rd-data-analysis/datasources/spark-livy
+ * @module dsh-data-analysis/datasources/spark-livy
  */
 
 import type { ColumnInfo, DataSourceProvider, QueryOptions, QueryResult, SchemaInfo, SqlDialect } from '../types.ts'

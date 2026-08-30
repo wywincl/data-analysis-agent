@@ -13,7 +13,7 @@
  * `QueryJob` carries no rows (those live in the separate `results` map keyed
  * by the same jobId) so status polling stays cheap.
  *
- * @module dsh-rd-data-analysis/jobs
+ * @module dsh-data-analysis/jobs
  */
 
 import type { ColumnInfo, DataSourceProvider, QueryOptions, QueryResult } from './types.ts'

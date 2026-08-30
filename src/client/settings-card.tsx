@@ -1,6 +1,6 @@
 /**
  * 数据库工作台 settings card (browser half): live connection management for
- * the `rd-data-analysis` settings namespace.
+ * the `data-analysis` settings namespace.
  *
  * Edits stage locally; 保存 writes `dataSources` (+ `semanticFile`) through
  * the bound settings scope — the Host hot-swaps providers and rewires the
@@ -13,7 +13,7 @@
  * an effect and the form stages once when the section first arrives. 重置
  * re-stages from the store.
  *
- * @module dsh-rd-data-analysis/client/settings-card
+ * @module dsh-data-analysis/client/settings-card
  */
 
 import { useEffect, useState, type ReactNode } from 'react'

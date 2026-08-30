@@ -19,7 +19,7 @@
  * `dt >= date_sub(now(), interval 7 day)`), and guessing column names out of
  * them with a regex would produce more false positives than real catches.
  *
- * @module dsh-rd-data-analysis/semantic/lint
+ * @module dsh-data-analysis/semantic/lint
  */
 
 import { tpl } from '../i18n/index.ts'

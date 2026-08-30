@@ -21,7 +21,7 @@
  * Components consume these as `--rd-*` custom properties set on their root
  * element; the style constants below stay static objects.
  *
- * @module dsh-rd-data-analysis/client/theme
+ * @module dsh-data-analysis/client/theme
  */
 
 import type { CSSProperties } from 'react'

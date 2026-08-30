@@ -2,7 +2,7 @@
  * Semantic layer tools: `list_semantic` (catalog view) and `query_metric`
  * (governed metric → guarded SQL → rows + resultId for render_chart).
  *
- * @module dsh-rd-data-analysis/semantic/tools
+ * @module dsh-data-analysis/semantic/tools
  */
 
 import type { Context } from '@deepseek-ai/cordis'

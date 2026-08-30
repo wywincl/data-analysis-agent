@@ -12,7 +12,7 @@
  * row + 10 units per second of execution, rounded. It ranks query weight
  * well enough to spot runaway scans without pretending to know a bill.
  *
- * @module dsh-rd-data-analysis/audit
+ * @module dsh-data-analysis/audit
  */
 
 export type AuditKind = 'run_sql' | 'query_metric' | 'analyze' | 'async' | 'command'

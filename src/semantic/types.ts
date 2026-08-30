@@ -34,7 +34,7 @@
  * values. @see include.ts for file composition, @see compose.ts for merge and
  * inheritance, @see lint.ts for the post-load health check.
  *
- * @module dsh-rd-data-analysis/semantic/types
+ * @module dsh-data-analysis/semantic/types
  */
 
 /** Aggregations a metric may apply to its measure. */

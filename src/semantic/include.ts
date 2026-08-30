@@ -24,7 +24,7 @@
  *   silently dropping half the catalog — a missing domain is a config bug, not
  *   an empty domain.
  *
- * @module dsh-rd-data-analysis/semantic/include
+ * @module dsh-data-analysis/semantic/include
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'

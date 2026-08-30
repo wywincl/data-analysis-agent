@@ -3,7 +3,7 @@
  * canvas (SVG renderer, theme-agnostic) with export and SQL provenance
  * affordances. Reads only `node.data` — replay-safe per the cookbook.
  *
- * @module dsh-rd-data-analysis/client/ChartNodeView
+ * @module dsh-data-analysis/client/ChartNodeView
  */
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'

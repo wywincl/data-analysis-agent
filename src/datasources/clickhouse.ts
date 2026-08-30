@@ -9,7 +9,7 @@
  * Server-side hardening: run the connection under a ClickHouse `readonly`
  * profile; the SQL guard remains the first line of defense.
  *
- * @module dsh-rd-data-analysis/datasources/clickhouse
+ * @module dsh-data-analysis/datasources/clickhouse
  */
 
 import type { ColumnInfo, DataSourceProvider, DataSourceType, QueryOptions, QueryResult, SchemaInfo, SqlDialect } from '../types.ts'

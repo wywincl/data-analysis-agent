@@ -9,7 +9,7 @@
  * native build) is not installed. A query against an uninstalled driver
  * fails fast with a clear install hint rather than a cryptic native crash.
  *
- * @module dsh-rd-data-analysis/datasources/duckdb
+ * @module dsh-data-analysis/datasources/duckdb
  */
 
 import type { ColumnInfo, DataSourceProvider, QueryOptions, QueryResult, SchemaInfo, SqlDialect } from '../types.ts'

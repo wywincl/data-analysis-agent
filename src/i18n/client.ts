@@ -1,7 +1,7 @@
 /**
  * Client-side i18n dictionaries for the RD Data Analysis plugin.
  *
- * @module dsh-rd-data-analysis/i18n/client
+ * @module dsh-data-analysis/i18n/client
  */
 
 export type ClientLocale = 'zh' | 'en'

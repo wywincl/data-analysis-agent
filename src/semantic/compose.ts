@@ -27,7 +27,7 @@
  * composed config contains no `extends`, no implicit defaults — so downstream
  * code (SQL builder, catalog, prompt digest) stays dumb and total.
  *
- * @module dsh-rd-data-analysis/semantic/compose
+ * @module dsh-data-analysis/semantic/compose
  */
 
 import type { LoadedFragment } from './include.ts'

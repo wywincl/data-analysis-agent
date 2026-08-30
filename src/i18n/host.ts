@@ -1,7 +1,7 @@
 /**
  * Host-side i18n strings for prompts, commands, and tools.
  *
- * @module dsh-rd-data-analysis/i18n/host
+ * @module dsh-data-analysis/i18n/host
  */
 
 export type HostLocale = 'zh' | 'en'
@@ -159,7 +159,7 @@ export interface HostStrings {
 
 export const zh: HostStrings = {
   'workflow.title': '## 数据分析工作流',
-  'workflow.connectedTo': '你通过 rd-data-analysis 插件连接到以下数据源:\n{sources}{defaultNote}',
+  'workflow.connectedTo': '你通过 data-analysis 插件连接到以下数据源:\n{sources}{defaultNote}',
   'workflow.discipline': '对每个数据问题遵循以下纪律:',
   'workflow.step1': '不确定有什么数据源时，先调用 **list_data_sources** 一次。',
   'workflow.step2': '写 SQL 之前必须先 **inspect_schema**。永远不要猜测表名或列名。',
@@ -307,7 +307,7 @@ export const zh: HostStrings = {
 
 export const en: HostStrings = {
   'workflow.title': '## Data analysis workflow',
-  'workflow.connectedTo': 'You are connected to these data sources through the rd-data-analysis plugin:\n{sources}{defaultNote}',
+  'workflow.connectedTo': 'You are connected to these data sources through the data-analysis plugin:\n{sources}{defaultNote}',
   'workflow.discipline': 'Follow this discipline for every data question:',
   'workflow.step1': 'Call **list_data_sources** once when unsure what exists.',
   'workflow.step2': '**inspect_schema** before writing SQL. Never guess table or column names.',

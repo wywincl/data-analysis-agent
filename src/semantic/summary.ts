@@ -6,7 +6,7 @@
  * issues). The host pushes this into the config via the same channel the
  * connectivity probe uses, so the card re-renders whenever the layer reloads.
  *
- * @module dsh-rd-data-analysis/semantic/summary
+ * @module dsh-data-analysis/semantic/summary
  */
 
 import { formatLintIssue } from './lint.ts'

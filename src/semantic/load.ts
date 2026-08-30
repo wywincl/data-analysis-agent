@@ -17,7 +17,7 @@
  * the runtime keeps the last good config; semantic smells come back as
  * warnings and never block a load.
  *
- * @module dsh-rd-data-analysis/semantic/load
+ * @module dsh-data-analysis/semantic/load
  */
 
 import { parse as parseYaml } from 'yaml'

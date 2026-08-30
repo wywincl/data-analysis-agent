@@ -7,7 +7,7 @@
  * half owns data access, guardrails, the semantic layer, and option building;
  * this half only renders and edits settings.
  *
- * @module dsh-rd-data-analysis/client
+ * @module dsh-data-analysis/client
  */
 
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
@@ -43,7 +43,7 @@ class RdCardBoundary extends Component<{ children: ReactNode }, { error: string 
     return { error: error instanceof Error ? error.message : String(error) }
   }
   componentDidCatch(error: unknown): void {
-    console.error('[rd-data-analysis] workbench card render error:', error)
+    console.error('[data-analysis] workbench card render error:', error)
   }
   render(): ReactNode {
     return this.state.error === null ? this.props.children : null
@@ -69,7 +69,7 @@ export function apply(ctx: ClientContext): void {
     RdChartNodeView as any,
   ))
 
-  const scope = ctx.settingsScope.bind({ namespace: 'rd-data-analysis' }) as SettingsScope<WorkbenchSection>
+  const scope = ctx.settingsScope.bind({ namespace: 'data-analysis' }) as SettingsScope<WorkbenchSection>
   const t = locale !== undefined ? locale.bind(NS) : ((key: ClientKey) => {
     const stored = (scope.getSnapshot().value as { locale?: string } | undefined)?.locale
     const dict = stored === 'en' ? en : zh

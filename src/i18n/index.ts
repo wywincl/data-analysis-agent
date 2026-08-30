@@ -1,7 +1,7 @@
 /**
  * i18n index: shared types and host-side translate helper.
  *
- * @module dsh-rd-data-analysis/i18n
+ * @module dsh-data-analysis/i18n
  */
 
 export type { HostLocale, HostStrings } from './host.ts'
