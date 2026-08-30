@@ -69,6 +69,17 @@ describe('renderStandaloneHtml (interactive dashboard)', () => {
     expect(out).toContain('\\u003cimg src=x')
   })
 
+  it('rebuilds cartesian charts with a yAxis (missing it paints a blank card)', () => {
+    // Regression: the bar/line branch of rebuildOption() used to emit only an
+    // xAxis. echarts then threw while building the cartesian coordinate system
+    // and every filtered card — in fact every card, since rebuildOption runs on
+    // first paint — rendered empty. Caught by tests/e2e-dashboard.spec.ts; this
+    // static guard keeps it caught on machines without a browser.
+    expect(html).toContain('o.yAxis = (isPlain(src.yAxis) || Array.isArray(src.yAxis)) ? clone(src.yAxis) : { type: \'value\' }')
+    // Scatter declares both axes explicitly; pie needs none.
+    expect(html).toContain('o3.yAxis = { type: \'value\', scale: true }')
+  })
+
   it('renders without fields metadata (older payloads stay exportable)', () => {
     const legacy: ExportedChart = { ...chart, fields: undefined }
     const out = renderStandaloneHtml([legacy], { title: 't', echartsUmd: 'stub' })

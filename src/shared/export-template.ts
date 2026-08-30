@@ -165,6 +165,10 @@ var RD_CHARTS = ${embedJson(payload)};
     return null;
   }
   function txt(v) { return v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v)); }
+  function isPlain(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
+  // Options arrive as embedded JSON, so a JSON round-trip is a safe deep copy
+  // for keeping the author's axis formatting (unit labels, min/max, ...).
+  function clone(v) { return v === null || typeof v !== 'object' ? v : JSON.parse(JSON.stringify(v)); }
   function base(title) {
     return { backgroundColor: 'transparent', title: { text: title, left: 'left', textStyle: { fontSize: 14, fontWeight: 600 } },
       tooltip: { trigger: 'axis' }, legend: { type: 'scroll', top: 0, right: 0 },
@@ -177,7 +181,16 @@ var RD_CHARTS = ${embedJson(payload)};
       var xf = f.xField, ys = f.yFields || [];
       if (!xf || ys.length === 0 || rows.length === 0) return chart.option;
       var o = base(chart.title);
-      o.xAxis = { type: 'category', data: rows.map(function (r) { return txt(r[xf]); }), boundaryGap: f.chartType === 'bar' };
+      var src = chart.option || {};
+      // Inherit the author's axis formatting, then overwrite the parts that
+      // depend on the (possibly filtered) row set. The yAxis MUST exist or
+      // echarts throws while building the cartesian coordinate system and the
+      // card paints blank.
+      o.xAxis = isPlain(src.xAxis) ? clone(src.xAxis) : {};
+      o.xAxis.type = 'category';
+      o.xAxis.data = rows.map(function (r) { return txt(r[xf]); });
+      o.xAxis.boundaryGap = f.chartType === 'bar';
+      o.yAxis = (isPlain(src.yAxis) || Array.isArray(src.yAxis)) ? clone(src.yAxis) : { type: 'value' };
       o.series = ys.map(function (y) { return { name: y, type: f.chartType, data: rows.map(function (r) { return num(r[y]); }) }; });
       return o;
     }
