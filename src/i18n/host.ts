@@ -13,6 +13,7 @@ export interface HostStrings {
   'workflow.step1': string
   'workflow.step2': string
   'workflow.step3': string
+  'workflow.asyncNote': string
   'workflow.step4': string
   'workflow.step5': string
   'workflow.step6': string
@@ -86,6 +87,11 @@ export interface HostStrings {
   'tool.query_metric.cardPrefix': string
   'tool.query_metric.render.success': string
   'tool.query_metric.missingDatasource': string
+  'tool.run_query_async.desc': string
+  'tool.run_query_async.started': string
+  'tool.get_query_job.desc': string
+  'tool.get_result_rows.desc': string
+  'tool.get_result_rows.header': string
   // Semantic-layer lint: one message + one optional hint per rule code.
   // Issues carry structured params; these templates are applied at render
   // time so switching locale needs no semantic reload.
@@ -143,6 +149,7 @@ export const zh: HostStrings = {
   'workflow.step1': '不确定有什么数据源时，先调用 **list_data_sources** 一次。',
   'workflow.step2': '写 SQL 之前必须先 **inspect_schema**。永远不要猜测表名或列名。',
   'workflow.step3': '使用 **run_sql** 执行一条只读 SELECT。护栏是不可协商的，由平台强制执行：单条 SELECT/WITH 语句、无 DML/DDL、缺失时自动注入 LIMIT、每数据源行数上限和超时。始终填写 `reason`（用途说明，展示给审批人并写入审计）。',
+  'workflow.asyncNote': '长查询/大结果集：改用 **run_query_async** 后台执行（同样过护栏），立即返回 jobId；用 **get_query_job** 轮询状态，用 **get_result_rows** 分页取数，不要在单轮里拉全量。',
   'workflow.step4': '只要结果有形状，就调用 **render_chart** 生成图表：趋势 → line，对比 → bar，占比 → pie，关系 → scatter，密度 → heatmap，单一 headline 数字 → kpi。优先传递 run_sql 返回的 `resultId` 而非重新发送行。图表会内嵌在对话中，支持 HTML/PNG/CSV 导出。',
   'workflow.step5': '统计需求使用 **analyze_data**：profile / topn / correlation / distribution——不要手动写重复 SQL。在回答中解释返回的数字。',
   'workflow.step6': '用你实际查询到的数字作答，引用你运行的 SQL，并标注截断（行数上限）或 mock 数据源。如果查询被护栏拒绝，将其重写为单条 SELECT——不要试图绕过护栏。',
@@ -216,6 +223,11 @@ export const zh: HostStrings = {
   'tool.query_metric.cardPrefix': '指标查询',
   'tool.query_metric.render.success': '指标 "{metric}" 在 "{ds}" 上查询成功 — {count} 行。{note}\nresultId: {rid}  ← 将此值传递给 render_chart\nSQL（从受治理定义生成）:\n{sql}\n\n{table}',
   'tool.query_metric.missingDatasource': '指标 "{metric}" 解析到数据源 "{ds}" 但未配置。修复语义层或添加连接。',
+  'tool.run_query_async.desc': '后台异步执行一条只读 SELECT（适用于长查询/大结果集）。立即返回 jobId 与状态；用 get_query_job 轮询状态，用 get_result_rows 分页拉取结果。SQL 同样经过只读护栏。注意:异步任务不触发人工审批(approvalMode: ask 在此跳过),但一律经过护栏校验。',
+  'tool.run_query_async.started': '已提交异步查询 "{ds}" — jobId: {jid}, 状态: {status}。用 get_query_job 轮询,用 get_result_rows 取数。',
+  'tool.get_query_job.desc': '查询一个异步任务的当前状态(jobId 来自 run_query_async)。返回 status(pending/running/succeeded/failed/cancelled)、行数、错误(若失败)与完成时间。',
+  'tool.get_result_rows.desc': '分页拉取一个已成功(succeeded)异步任务的查询结果(offset/limit)。任务未成功时不返回行。',
+  'tool.get_result_rows.header': '异步结果 "{jid}" — 状态 {status}, 共 {total} 行(本页 {count}):',
   'lint.duplicate-definition.message': '重复定义,已采用 {winner} 的版本,{loser} 中的同名定义被丢弃',
   'lint.duplicate-definition.hint': '若是有意覆盖,可忽略;否则改用 extends 继承,或只覆盖需要变更的字段',
   'lint.unknown-dimension-column.message': '维度 {names} 未在 entity "{entity}".columns 中声明',
@@ -270,6 +282,7 @@ export const en: HostStrings = {
   'workflow.step1': 'Call **list_data_sources** once when unsure what exists.',
   'workflow.step2': '**inspect_schema** before writing SQL. Never guess table or column names.',
   'workflow.step3': 'Use **run_sql** with ONE read-only SELECT. Guardrails are non-negotiable and enforced for you: single SELECT/WITH statement, no DML/DDL, LIMIT auto-injected when missing, per-source row cap and timeout. Always fill `reason` with the question the query answers (shown to approvers).',
+  'workflow.asyncNote': 'Long queries / large result sets: use **run_query_async** instead (same guardrails) — it returns a jobId immediately; poll with **get_query_job** and page rows with **get_result_rows** rather than pulling everything in one turn.',
   'workflow.step4': 'Call **render_chart** whenever a result has shape: trend → line, comparison → bar, share → pie, relationship → scatter, density → heatmap, single headline number → kpi. Prefer passing the `resultId` from run_sql over re-sending rows. Charts render inside the conversation with HTML/PNG/CSV export.',
   'workflow.step5': 'Use **analyze_data** for statistics: profile / topn / correlation / distribution — instead of hand-rolling the same SQL. Interpret the returned numbers in your answer.',
   'workflow.step6': 'Answer with the numbers you actually queried, cite the SQL you ran, and flag truncation (row caps) or mock datasources explicitly. If a query fails the guard, rewrite it as a single SELECT — do not attempt to bypass the guardrails.',
@@ -340,6 +353,11 @@ export const en: HostStrings = {
   'tool.list_semantic.formula': 'Formula',
   'tool.list_semantic.filters': 'Fixed filters',
   'tool.query_metric.desc': 'Query a GOVERNED metric from the semantic layer (统一口径, audit-safe). Builds the SQL from the metric definition — you only pick the metric id, optional declared dimensions, dimension value filters, and an optional from/to time range. Returns rows plus a resultId for render_chart. Prefer this over run_sql whenever a list_semantic metric matches the question.',
+  'tool.run_query_async.desc': 'Run ONE read-only SELECT in the BACKGROUND (for long queries / large result sets). Returns a jobId and status immediately; poll with get_query_job and page results with get_result_rows. The SQL still passes the read-only guard. Note: async jobs skip interactive approval (approvalMode: ask is bypassed here) but are always guard-validated.',
+  'tool.run_query_async.started': 'Submitted async query on "{ds}" — jobId: {jid}, status: {status}. Poll with get_query_job, fetch rows with get_result_rows.',
+  'tool.get_query_job.desc': 'Get the current status of an async job (jobId from run_query_async). Returns status (pending/running/succeeded/failed/cancelled), row count, error (if failed), and finish time.',
+  'tool.get_result_rows.desc': 'Page the result rows of a succeeded async job (offset/limit). Returns nothing until the job has succeeded.',
+  'tool.get_result_rows.header': 'Async result "{jid}" — status {status}, {total} rows total ({count} in this page):',
   'tool.query_metric.cardPrefix': 'Metric query',
   'tool.query_metric.render.success': 'Metric "{metric}" OK on "{ds}" — {count} rows.{note}\nresultId: {rid}  ← pass THIS to render_chart\nSQL (generated from the governed definition):\n{sql}\n\n{table}',
   'tool.query_metric.missingDatasource': 'Metric "{metric}" resolves to datasource "{ds}" which is not configured. Fix the semantic layer or add the connection.',

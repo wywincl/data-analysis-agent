@@ -27,6 +27,7 @@ export function workflowSectionText(config: Config): string {
     '1. ' + s['workflow.step1'] + '\n' +
     '2. ' + s['workflow.step2'] + '\n' +
     '3. ' + s['workflow.step3'] + '\n' +
+    s['workflow.asyncNote'] + '\n' +
     '4. ' + s['workflow.step4'] + '\n' +
     '5. ' + s['workflow.step5'] + '\n' +
     '6. ' + s['workflow.step6'] + '\n\n' +

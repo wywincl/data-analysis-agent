@@ -17,6 +17,7 @@ import { limitsFor, type Config } from '../config.ts'
 import type { DataSourceRegistry } from '../registry.ts'
 import type { DataSourceProvider, RdChartType, RdChartTypeInput, RdSeriesInput } from '../types.ts'
 import type { SemanticLayer } from '../semantic/layer.ts'
+import type { JobStore } from '../jobs.ts'
 import { guardSelectOnly, GuardError } from '../sql/guard.ts'
 import { autoChartType, buildEchartsOption, optionDataPoints } from '../charts/echarts-option.ts'
 import { correlation, distribution, insight, profile, topn, type AnalysisContext, type AnalysisKind } from '../analysis/analyze.ts'
@@ -43,7 +44,7 @@ function s(config: Config, key: keyof typeof zh): string {
 }
 
 /** Register every tool; returns nothing (registrations are effects on ctx). */
-export function registerTools(ctx: Context, config: Config, registry: DataSourceRegistry, semantic: SemanticLayer): void {
+export function registerTools(ctx: Context, config: Config, registry: DataSourceRegistry, semantic: SemanticLayer, jobs: JobStore): void {
   const { modelRowCap } = config
 
   ctx.tools.register(defineTool({
@@ -421,6 +422,135 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
         datasource: provider.name,
         baseSql: guarded.sql,
         ...result,
+      } as unknown as Record<string, JsonValue>
+    },
+  }))
+
+  // ── Async long-query jobs (③ datasources roadmap) ─────────────────────────
+  // run_query_async → get_query_job → get_result_rows. Long / large queries
+  // run in the background and are paged back, so a heavy Spark/warehouse scan
+  // never blocks (or overflows) a single model turn. Async jobs deliberately
+  // skip the interactive approval gate — the read-only guard still applies.
+
+  ctx.tools.register(defineTool({
+    name: 'run_query_async',
+    description: s(config, 'tool.run_query_async.desc'),
+    parameters: {
+      datasource: { type: 'string', required: true, description: 'Data source name.' },
+      sql: { type: 'string', required: true, description: 'A single SELECT statement (guardrails apply; LIMIT injected).' },
+      reason: { type: 'string', required: true, description: 'One sentence: what this query answers (audit trail).' },
+      maxRows: { type: 'number', description: 'Row cap stored for later paging (default: datasource setting).' },
+    },
+    output: {
+      schema: objectSchema(),
+      render: (_args, value) => {
+        const job = value as { jobId: string, datasource: string, status: string }
+        return [{
+          type: 'text',
+          text: tpl(s(config, 'tool.run_query_async.started'), { ds: job.datasource, jid: job.jobId, status: job.status }),
+        }]
+      },
+    },
+    presentCall: (args) => ({
+      card: 'generic' as const,
+      title: `SQL(异步) · ${args.datasource}`,
+      kind: 'other' as const,
+      rawInput: { datasource: args.datasource, reason: args.reason, sql: args.sql },
+    }),
+    async execute(args) {
+      const provider = requireProvider(registry, args.datasource)
+      const configured = config.dataSources.find((ds) => ds.name === args.datasource)
+      const { timeoutMs, maxRows: sourceMaxRows } = limitsFor(config, configured)
+      const maxRows = Math.min(Math.max(args.maxRows ?? sourceMaxRows, 1), 50_000)
+      const guarded = guardSelectOnly(args.sql, provider.dialect, maxRows)
+      const jobId = crypto.randomUUID()
+      const job = jobs.start(jobId, provider, guarded.sql, { timeoutMs, maxRows }, guarded.tables)
+      return {
+        jobId: job.jobId,
+        datasource: job.datasource,
+        status: job.status,
+        sql: guarded.sql,
+        tablesTouched: guarded.tables,
+        reason: args.reason,
+      } as unknown as Record<string, JsonValue>
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'get_query_job',
+    description: s(config, 'tool.get_query_job.desc'),
+    parameters: {
+      jobId: { type: 'string', required: true, description: 'jobId from run_query_async.' },
+      cancel: { type: 'boolean', description: 'true: request cancellation of a pending/running job.' },
+    },
+    output: {
+      schema: objectSchema(),
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2).slice(0, 4000) }],
+    },
+    async execute(args) {
+      if (args.cancel === true) {
+        const cancelled = jobs.cancel(args.jobId)
+        if (!cancelled) {
+          throw new GuardError(`Job "${args.jobId}" is unknown, expired, or already finished — nothing to cancel.`)
+        }
+      }
+      const job = jobs.get(args.jobId)
+      if (job === undefined) {
+        throw new GuardError(`Job "${args.jobId}" is unknown or expired (TTL ${config.asyncJobTtlMs} ms). Re-run run_query_async.`)
+      }
+      return {
+        jobId: job.jobId,
+        datasource: job.datasource,
+        sql: job.sql,
+        status: job.status,
+        rowCount: job.rowCount,
+        truncated: job.truncated,
+        tablesTouched: job.tablesTouched,
+        ...(job.error !== undefined ? { error: job.error } : {}),
+        createdAt: new Date(job.createdAt).toISOString(),
+        ...(job.finishedAt !== undefined ? { finishedAt: new Date(job.finishedAt).toISOString() } : {}),
+      } as unknown as Record<string, JsonValue>
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'get_result_rows',
+    description: s(config, 'tool.get_result_rows.desc'),
+    parameters: {
+      jobId: { type: 'string', required: true, description: 'jobId from run_query_async (must have succeeded).' },
+      offset: { type: 'number', description: 'Row offset (default 0).' },
+      limit: { type: 'number', description: 'Page size (default 100, max 10000).' },
+    },
+    output: {
+      schema: objectSchema(),
+      render: (_args, value) => {
+        const page = value as { jobId: string, status: string, total: number, offset: number, rows: Record<string, JsonValue>[], columns: { name: string }[] }
+        return [{
+          type: 'text',
+          text: tpl(s(config, 'tool.get_result_rows.header'), { jid: page.jobId, status: page.status, total: page.total, count: page.rows.length }) + '\n' +
+            textTable(page.columns.map((col) => col.name), page.rows),
+        }]
+      },
+    },
+    async execute(args) {
+      const offset = args.offset ?? 0
+      const limit = args.limit ?? 100
+      const page = jobs.rows(args.jobId, offset, limit)
+      if (page === undefined) {
+        const job = jobs.get(args.jobId)
+        if (job === undefined) {
+          throw new GuardError(`Job "${args.jobId}" is unknown or expired (TTL ${config.asyncJobTtlMs} ms).`)
+        }
+        throw new GuardError(`Job "${args.jobId}" has status "${job.status}" — rows are only available once it succeeds. Poll with get_query_job.`)
+      }
+      return {
+        jobId: page.jobId,
+        status: page.status,
+        total: page.total,
+        offset: page.offset,
+        limit: page.limit,
+        columns: page.columns,
+        rows: page.rows,
       } as unknown as Record<string, JsonValue>
     },
   }))

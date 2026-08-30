@@ -18,6 +18,8 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     exportDir: '',
     resultCacheSize: 50,
     resultCacheTtlMs: 30 * 60_000,
+    asyncJobTtlMs: 10 * 60_000,
+    asyncJobCacheSize: 20,
     locale: 'zh',
     currentRole: '',
     ...overrides,

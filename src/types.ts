@@ -12,8 +12,8 @@ import type { JsonValue } from '@deepseek-ai/dsh-session'
 
 export type { JsonValue }
 
-/** Supported datasource engines. `spark` ships as a mock provider (see spark.ts). */
-export type DataSourceType = 'sqlite' | 'mysql' | 'postgres' | 'clickhouse' | 'spark'
+/** Supported datasource engines. `spark` ships a mock plus a real Livy backend (see spark.ts / spark-livy.ts). */
+export type DataSourceType = 'sqlite' | 'mysql' | 'postgres' | 'clickhouse' | 'spark' | 'duckdb'
 
 /** SQL dialect used by the guard parser and introspection. */
 export type SqlDialect = 'sqlite' | 'mysql' | 'postgresql' | 'hive'

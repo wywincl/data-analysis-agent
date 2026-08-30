@@ -23,7 +23,7 @@ export type ApprovalMode = 'auto' | 'ask'
 export interface DataSourceConfig {
   /** Registry key the model references in tools. */
   name: string
-  type: 'sqlite' | 'mysql' | 'postgres' | 'clickhouse' | 'spark'
+  type: 'sqlite' | 'mysql' | 'postgres' | 'clickhouse' | 'spark' | 'duckdb'
   /** SQLite database file path (`type: 'sqlite'`). */
   file?: string
   /** mysql/postgres: host; clickhouse: HTTP base like `http://ck-prod`. */
@@ -44,6 +44,8 @@ export interface DataSourceConfig {
   timeoutMs?: number
   /** Placeholder flag honored by the spark provider (v1 ships mock only). */
   sparkMock?: boolean
+  /** Real Spark backend (Livy REST) base URL, e.g. `http://livy-prod:8998`. Required when sparkMock is false. */
+  livyUrl?: string
 }
 
 export interface Config {
@@ -106,6 +108,10 @@ export interface Config {
   resultCacheSize: number
   /** TTL for resultId references usable by render_chart, milliseconds. */
   resultCacheTtlMs: number
+  /** Async query job (run_query_async) result TTL in milliseconds. */
+  asyncJobTtlMs: number
+  /** Max async jobs retained (evicts oldest beyond this). */
+  asyncJobCacheSize: number
   /** Interface language: 'zh' (default) or 'en'. */
   locale: string
   /**
@@ -121,8 +127,8 @@ export const Config: Schema<Config> = Schema.object({
   dataSources: Schema.array(
     Schema.object({
       name: Schema.string().required().description('数据源唯一标识 | Unique datasource id, referenced by tools, e.g. demo / shop-mysql'),
-      type: Schema.union(['sqlite', 'mysql', 'postgres', 'clickhouse', 'spark']).required().description('引擎类型 | Engine type'),
-      file: Schema.string().description('SQLite 数据库文件绝对路径 | Absolute SQLite file path (required when type=sqlite)'),
+      type: Schema.union(['sqlite', 'mysql', 'postgres', 'clickhouse', 'spark', 'duckdb']).required().description('引擎类型 | Engine type'),
+      file: Schema.string().description('SQLite/DuckDB 文件绝对路径(可选);DuckDB 也可直接查询 Parquet/CSV | Absolute SQLite/DuckDB file path (optional); DuckDB can also query Parquet/CSV directly'),
       host: Schema.string().description('主机名 | Host; clickhouse uses an HTTP base like http://ck-prod'),
       port: Schema.number().description('端口 | Port; defaults per engine (mysql 3306 / postgres 5432 / clickhouse 8123)'),
       user: Schema.string().description('连接账号 | Account; prefer a read-only role'),
@@ -133,6 +139,7 @@ export const Config: Schema<Config> = Schema.object({
       maxRows: Schema.number().description('本数据源单查询行上限 | Per-source row cap; falls back to global defaultMaxRows'),
       timeoutMs: Schema.number().description('本数据源语句超时(毫秒) | Per-source statement timeout in ms; falls back to defaultTimeoutMs'),
       sparkMock: Schema.boolean().default(true).description('true 用内建 Mock(v1);接入真实后端时置 false | Use the built-in mock (v1); set false once a real backend exists'),
+      livyUrl: Schema.string().description('真实 Spark 后端(Livy REST)地址,如 http://livy-prod:8998;sparkMock=false 时必填 | Real Spark (Livy REST) base URL; required when sparkMock=false'),
     }),
   ).default([]).description('已配置的数据源连接列表 | Configured datasource connections'),
   defaultDatasource: Schema.string().default('').description('默认数据源 | Default datasource; empty lets the model choose from dataSources'),
@@ -162,6 +169,8 @@ export const Config: Schema<Config> = Schema.object({
   exportDir: Schema.string().default('').description('/data-dashboard 输出目录 | Output directory; empty defaults to ~/Downloads/dsh-exports'),
   resultCacheSize: Schema.number().default(50).description('每会话保留的已执行查询结果条数 | Executed query results kept per session'),
   resultCacheTtlMs: Schema.number().default(30 * 60_000).description('resultId 引用 TTL(毫秒) | resultId reference TTL in ms, consumed by render_chart'),
+  asyncJobTtlMs: Schema.number().default(10 * 60_000).description('异步查询任务结果 TTL(毫秒) | Async query job result TTL in ms'),
+  asyncJobCacheSize: Schema.number().default(20).description('保留的异步任务数上限(超出逐出最旧) | Max async jobs retained (evicts oldest beyond this)'),
   locale: Schema.string().default('zh').description('界面语言: zh(中文) 或 en(English)'),
   currentRole: Schema.string().default('').description('当前角色(行级安全):非空时,实体的 rowFilter 会按 {role} 注入,敏感列对无 readRoles 的角色脱敏 | Active role for RLS: when set, entity rowFilter is injected with {role} and sensitive columns are masked'),
 })
@@ -181,6 +190,8 @@ export function validateConfig(config: Config): void {
   if (config.schemaCacheTtlMs < 0) throw new Error(`rd-data-analysis: ${gte('schemaCacheTtlMs', 0)}`)
   if (config.resultCacheSize < 1) throw new Error(`rd-data-analysis: ${gte('resultCacheSize', 1)}`)
   if (config.resultCacheTtlMs < 0) throw new Error(`rd-data-analysis: ${gte('resultCacheTtlMs', 0)}`)
+  if (config.asyncJobCacheSize < 1) throw new Error(`rd-data-analysis: ${gte('asyncJobCacheSize', 1)}`)
+  if (config.asyncJobTtlMs < 0) throw new Error(`rd-data-analysis: ${gte('asyncJobTtlMs', 0)}`)
 
   const names = new Set<string>()
   for (const ds of config.dataSources) {
@@ -197,6 +208,9 @@ export function validateConfig(config: Config): void {
     }
     if ((ds.type === 'mysql' || ds.type === 'postgres' || ds.type === 'clickhouse') && (!ds.host || !ds.database)) {
       throw new Error(`rd-data-analysis: datasource "${ds.name}" (${ds.type}) requires "host" and "database"`)
+    }
+    if (ds.type === 'spark' && ds.sparkMock === false && !ds.livyUrl) {
+      throw new Error(`rd-data-analysis: datasource "${ds.name}" (spark, real backend) requires "livyUrl"`)
     }
   }
   if (config.defaultDatasource !== '' && !names.has(config.defaultDatasource)) {

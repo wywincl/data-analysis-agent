@@ -27,7 +27,10 @@ import { createMysqlProvider } from './datasources/mysql.ts'
 import { createPostgresProvider } from './datasources/postgres.ts'
 import { createClickhouseProvider } from './datasources/clickhouse.ts'
 import { createSparkMockProvider } from './datasources/spark.ts'
+import { createSparkLivyProvider } from './datasources/spark-livy.ts'
+import { createDuckdbProvider } from './datasources/duckdb.ts'
 import { probeProvider } from './datasources/probe.ts'
+import { JobStore } from './jobs.ts'
 import type { HealthStatus } from './health.ts'
 import { SemanticLayer } from './semantic/layer.ts'
 import { registerSemanticTools } from './semantic/tools.ts'
@@ -86,9 +89,16 @@ function createProvider(ds: ConfigType['dataSources'][number]): import('./types.
         ...(ds.password !== undefined ? { password: ds.password } : {}),
       })
     case 'spark':
-      // v1: mock. Real Livy / Spark Connect backends implement the same
-      // DataSourceProvider seam — see src/datasources/spark.ts header.
+      // v1 default: mock. Set sparkMock:false + livyUrl to use a real Livy
+      // REST backend (same DataSourceProvider seam).
+      if (ds.sparkMock === false) {
+        if (ds.livyUrl === undefined) throw new Error(`rd-data-analysis: spark datasource "${ds.name}" has sparkMock:false but no livyUrl`)
+        return createSparkLivyProvider(ds.name, { livyUrl: ds.livyUrl, ...(ds.user !== undefined ? { user: ds.user } : {}) })
+      }
       return createSparkMockProvider(ds.name)
+    case 'duckdb':
+      // Native driver is optional; imported lazily and fails with a clear hint.
+      return createDuckdbProvider(ds.name, ds.file)
   }
 }
 
@@ -106,9 +116,11 @@ export function apply(ctx: Context, config: ConfigType): void {
     config.resultCacheTtlMs,
     config.resultCacheSize,
   )
+  const jobs = new JobStore(config.asyncJobTtlMs, config.asyncJobCacheSize)
   const semantic = new SemanticLayer(config.semanticFile === '' ? undefined : config.semanticFile, () => { pushSemanticSummary() })
   ctx.effect(() => () => {
     void registry.close()
+    void jobs.close()
     semantic.dispose()
   })
 
@@ -248,7 +260,7 @@ export function apply(ctx: Context, config: ConfigType): void {
   }
   wireDataSources()
 
-  registerTools(ctx, config, registry, semantic)
+  registerTools(ctx, config, registry, semantic, jobs)
   registerSemanticTools(ctx, config, registry, semantic)
   registerApprovalGate(ctx, config)
   registerCommands(ctx, config, registry, semantic)
