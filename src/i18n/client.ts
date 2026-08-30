@@ -103,6 +103,10 @@ export type ClientKey =
   | 'settings.semanticPreview'
   | 'settings.semanticDraftSaved'
   | 'settings.semanticScaffoldDone'
+  | 'settings.semanticScaffoldRun'
+  | 'settings.semanticNoEntities'
+  | 'settings.semanticNoMetrics'
+  | 'settings.semanticNoTerms'
   | 'chart.exportHtml'
   | 'chart.png'
   | 'chart.csv'
@@ -207,6 +211,10 @@ export const zh: Record<ClientKey, string> = {
   'settings.semanticPreview': '预览',
   'settings.semanticDraftSaved': '语义层已保存并热加载 ✓',
   'settings.semanticScaffoldDone': '已从数据源生成起步语义层 ✓',
+  'settings.semanticScaffoldRun': '生成',
+  'settings.semanticNoEntities': '暂无实体，点击"+ 实体"添加或使用"从数据源生成"',
+  'settings.semanticNoMetrics': '暂无指标，点击"+ 指标"添加或使用"从数据源生成"',
+  'settings.semanticNoTerms': '暂无术语，点击"+ 术语"添加',
   'chart.exportHtml': '导出 HTML',
   'chart.png': 'PNG',
   'chart.csv': 'CSV',
@@ -312,6 +320,10 @@ export const en: Record<ClientKey, string> = {
   'settings.semanticPreview': 'Preview',
   'settings.semanticDraftSaved': 'Semantic layer saved and hot-reloaded ✓',
   'settings.semanticScaffoldDone': 'Scaffolded starter semantic layer from datasource ✓',
+  'settings.semanticScaffoldRun': 'Generate',
+  'settings.semanticNoEntities': 'No entities yet. Click "+ Entity" or use "Generate from datasource"',
+  'settings.semanticNoMetrics': 'No metrics yet. Click "+ Metric" or use "Generate from datasource"',
+  'settings.semanticNoTerms': 'No terms yet. Click "+ Term" to add',
   'chart.exportHtml': 'Export HTML',
   'chart.png': 'PNG',
   'chart.csv': 'CSV',

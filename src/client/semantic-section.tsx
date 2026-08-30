@@ -108,6 +108,7 @@ export function SemanticSection({ scope, t, semanticFile, setSemanticFile, datas
   const [saved, setSaved] = useState(false)
   const [scaffoldDs, setScaffoldDs] = useState('')
   const [scaffolded, setScaffolded] = useState(false)
+  const [activeTab, setActiveTab] = useState<'preview' | 'editor'>('preview')
 
   // Stage the editor from the host-echoed workbench content once it arrives.
   useEffect(() => {
@@ -117,6 +118,14 @@ export function SemanticSection({ scope, t, semanticFile, setSemanticFile, datas
       setWbStaged(true)
     }
   }, [rev]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-switch to editor when workbench content is staged
+  useEffect(() => {
+    if (wbStaged && draft.entities.length > 0) {
+      setActiveTab('editor')
+      setEditing(true)
+    }
+  }, [wbStaged]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const patch = (key: keyof LayerDraft, index: number, field: string, value: string): void => {
     setSaved(false)
@@ -152,6 +161,11 @@ export function SemanticSection({ scope, t, semanticFile, setSemanticFile, datas
     setScaffolded(false)
     void scope.set('scaffoldRequest', { datasource: scaffoldDs, nonce: Date.now() })
     setScaffolded(true)
+    // Auto-open editor after scaffold
+    setTimeout(() => {
+      setActiveTab('editor')
+      setEditing(true)
+    }, 100)
   }
 
   const statusColor = (s?: SemanticSummary['state']): string => {
@@ -224,28 +238,48 @@ export function SemanticSection({ scope, t, semanticFile, setSemanticFile, datas
         </div>
       )}
 
-      {/* T4 scaffold */}
-      <div style={{ ...toolbar, marginTop: 10, alignItems: 'center' }}>
-        <select style={{ ...input, width: 200 }} value={scaffoldDs} onChange={(event) => setScaffoldDs(event.target.value)}>
-          <option value="">{t('settings.defaultSourceAuto')}</option>
-          {datasourceNames.map((name) => <option key={name} value={name}>{name}</option>)}
-        </select>
-        <button type="button" style={actionButton} disabled={scaffoldDs.trim() === ''} onClick={runScaffold}>{t('settings.semanticScaffold')}</button>
-        {scaffolded && <span style={{ ...mutedFine, color: 'var(--rd-success)' }}>{t('settings.semanticScaffoldDone')}</span>}
+      {/* Tabs: Preview / Editor */}
+      <div style={tabsContainer}>
+        <button
+          type="button"
+          style={activeTab === 'preview' ? tabActive : tab}
+          onClick={() => setActiveTab('preview')}
+        >
+          {t('settings.semanticPreview') ?? '预览'}
+        </button>
+        <button
+          type="button"
+          style={activeTab === 'editor' ? tabActive : tab}
+          onClick={() => { setActiveTab('editor'); setEditing(true) }}
+        >
+          {t('settings.semanticEdit')}
+        </button>
       </div>
-      <div style={mutedFine}>{t('settings.semanticScaffoldHint')}</div>
 
-      {/* T3 editor toggle */}
-      <div style={{ marginTop: 10 }}>
-        <button type="button" style={actionButton} onClick={() => setEditing((e) => !e)}>{editing ? '− ' + t('settings.semanticEdit') : '+ ' + t('settings.semanticEdit')}</button>
-      </div>
+      {/* T4 scaffold - inline in editor section */}
+      {activeTab === 'editor' && (
+        <div style={scaffoldBox}>
+          <div style={scaffoldLabel}>{t('settings.semanticScaffold') ?? '从数据源生成起步语义层'}</div>
+          <div style={{ ...toolbar, alignItems: 'center' }}>
+            <select style={{ ...input, width: 200 }} value={scaffoldDs} onChange={(event) => setScaffoldDs(event.target.value)}>
+              <option value="">{t('settings.defaultSourceAuto')}</option>
+              {datasourceNames.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+            <button type="button" style={actionButton} disabled={scaffoldDs.trim() === ''} onClick={runScaffold}>{t('settings.semanticScaffoldRun')}</button>
+            {scaffolded && <span style={{ ...mutedFine, color: 'var(--rd-success)' }}>{t('settings.semanticScaffoldDone')}</span>}
+          </div>
+          <div style={mutedFine}>{t('settings.semanticScaffoldHint')}</div>
+        </div>
+      )}
 
-      {editing && (
+      {/* Editor */}
+      {activeTab === 'editor' && editing && (
         <div style={editor}>
           {saved && <div style={markBanner('var(--rd-success)')}>{t('settings.semanticDraftSaved')}</div>}
 
           {/* entities */}
           <div style={subTitle}>{t('settings.semanticEntities')}</div>
+          {draft.entities.length === 0 && <div style={mutedFine}>{t('settings.semanticNoEntities')}</div>}
           {draft.entities.map((e, i) => (
             <div key={i} style={editRow}>
               <input style={mini} placeholder={t('settings.semanticEntityTable')} value={e.table} onChange={(ev) => patch('entities', i, 'table', ev.target.value)} />
@@ -260,6 +294,7 @@ export function SemanticSection({ scope, t, semanticFile, setSemanticFile, datas
 
           {/* metrics */}
           <div style={subTitle}>{t('settings.semanticMetrics')}</div>
+          {draft.metrics.length === 0 && <div style={mutedFine}>{t('settings.semanticNoMetrics')}</div>}
           {draft.metrics.map((m, i) => (
             <div key={i} style={editRow}>
               <input style={mini} placeholder={t('settings.semanticMetricName')} value={m.name} onChange={(ev) => patch('metrics', i, 'name', ev.target.value)} />
@@ -284,6 +319,7 @@ export function SemanticSection({ scope, t, semanticFile, setSemanticFile, datas
 
           {/* terms */}
           <div style={subTitle}>{t('settings.semanticTerms')}</div>
+          {draft.terms.length === 0 && <div style={mutedFine}>{t('settings.semanticNoTerms')}</div>}
           {draft.terms.map((tm, i) => (
             <div key={i} style={editRow}>
               <input style={mini} placeholder={t('settings.semanticTermName')} value={tm.name} onChange={(ev) => patch('terms', i, 'name', ev.target.value)} />
@@ -350,3 +386,16 @@ const addButton: React.CSSProperties = { alignSelf: 'flex-start', border: '1px d
 const markBanner = (color: string): React.CSSProperties => ({
   fontSize: 12, color, padding: '6px 10px', borderRadius: 8, background: `color-mix(in srgb, ${color} 8%, transparent)`,
 })
+// Tabs
+const tabsContainer: React.CSSProperties = { display: 'flex', gap: 0, borderBottom: '1px solid var(--rd-border)', marginTop: 8 }
+const tab: React.CSSProperties = {
+  border: 'none', background: 'transparent', color: 'var(--rd-muted)', cursor: 'pointer',
+  fontSize: 12, padding: '6px 12px', borderBottom: '2px solid transparent',
+}
+const tabActive: React.CSSProperties = { ...tab, color: 'var(--rd-accent)', borderBottomColor: 'var(--rd-accent)', fontWeight: 600 }
+// Scaffold box
+const scaffoldBox: React.CSSProperties = {
+  background: 'color-mix(in srgb, var(--rd-accent) 5%, transparent)',
+  border: '1px solid var(--rd-border)', borderRadius: 8, padding: 8, marginTop: 8,
+}
+const scaffoldLabel: React.CSSProperties = { fontSize: 12, fontWeight: 600, marginBottom: 6 }
