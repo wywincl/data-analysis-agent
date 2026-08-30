@@ -86,8 +86,14 @@ export interface SchemaInfo {
   readonly truncated: boolean
 }
 
-/** Chart families the render_chart tool can produce. */
-export type RdChartType = 'line' | 'bar' | 'pie' | 'scatter' | 'heatmap' | 'kpi'
+/**
+ * Chart families the render_chart tool can produce.
+ * `auto` is accepted by the tool and resolved host-side via `autoChartType()`
+ * before an option is built, so the model never has to guess the family.
+ */
+export type RdChartType = 'line' | 'bar' | 'pie' | 'scatter' | 'heatmap' | 'kpi' | 'boxplot' | 'funnel'
+/** Chart types the model may request; `auto` is resolved before option building. */
+export type RdChartTypeInput = RdChartType | 'auto'
 
 /** One series mapping for cartesian charts. */
 export interface RdSeriesInput {

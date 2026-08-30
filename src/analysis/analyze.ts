@@ -11,7 +11,7 @@
 import type { QueryResult, SqlDialect } from '../types.ts'
 import { GuardError, assertSafeIdentifier } from '../sql/guard.ts'
 
-export type AnalysisKind = 'profile' | 'topn' | 'correlation' | 'distribution'
+export type AnalysisKind = 'profile' | 'topn' | 'correlation' | 'distribution' | 'insight'
 
 export interface AnalysisContext {
   readonly dialect: SqlDialect
@@ -178,5 +178,142 @@ export async function distribution(
     median: Math.round(median(values) * 1000) / 1000,
     stddev: Math.round(stddev(values) * 1000) / 1000,
     bins,
+  }
+}
+
+/** How many of the largest groups are needed to cover `target` of the total. */
+function paretoGroups(rows: { value: number }[], total: number, target: number): number {
+  if (total <= 0) return 0
+  let running = 0
+  for (let index = 0; index < rows.length; index++) {
+    running += rows[index].value
+    if (running / total >= target) return index + 1
+  }
+  return rows.length
+}
+
+/**
+ * Structured "what does this data say" report combining the signals a human
+ * analyst reaches for first: headline stats, trend direction, top contributors
+ * with share of total, concentration (Pareto), and z-score outliers.
+ *
+ * The model narrates these numbers instead of re-deriving them from raw rows,
+ * which keeps conclusions consistent with the data actually returned.
+ */
+export async function insight(
+  ctx: AnalysisContext,
+  baseSql: string,
+  options: { dimension?: string, measure?: string, topN?: number },
+): Promise<Record<string, unknown>> {
+  const topN = Math.min(Math.max(options.topN ?? 5, 1), 50)
+  const r3 = (value: number): number => Math.round(value * 1000) / 1000
+  const dimension = options.dimension
+  if (dimension !== undefined) assertSafeIdentifier(dimension, 'dimension column')
+
+  // Resolve the measure: explicit, else the first mostly-numeric column.
+  let measure = options.measure
+  if (measure === undefined) {
+    const probe = await ctx.run(wrap(baseSql, 'rd_insight_probe'))
+    const columns = probe.rows.length > 0 ? Object.keys(probe.rows[0]) : probe.columns.map((c) => c.name)
+    measure = columns.find((column) => {
+      if (column === dimension) return false
+      const values = probe.rows.map((row) => row[column]).filter((v) => v !== null && v !== undefined && v !== '')
+      if (values.length === 0) return false
+      const numericish = values.filter((v) =>
+        typeof v === 'number' ? Number.isFinite(v) : (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))))
+      return numericish.length / values.length >= 0.8
+    })
+    if (measure === undefined) {
+      throw new GuardError('insight could not find a numeric column to analyze — pass "measure" explicitly.')
+    }
+  }
+  assertSafeIdentifier(measure, 'measure column')
+
+  // Row-grain stats over the measure.
+  const raw = await ctx.run(`SELECT ${measure} AS value FROM (\n${baseSql}\n) AS rd_insight_raw`)
+  const values = raw.rows.map((row) => Number(row.value)).filter((v) => Number.isFinite(v))
+  if (values.length === 0) throw new GuardError(`Column "${measure}" has no numeric values to summarize.`)
+
+  const total = values.reduce((sum, v) => sum + v, 0)
+  const avg = mean(values)
+  const sd = stddev(values)
+  const sorted = [...values].sort((a, b) => a - b)
+  const summary = {
+    rows: values.length,
+    total: r3(total),
+    mean: r3(avg),
+    median: r3(median(values)),
+    stddev: r3(sd),
+    min: sorted[0],
+    max: sorted[sorted.length - 1],
+  }
+
+  // Outliers at row grain (|z| >= 2).
+  const anomalies = values
+    .map((value) => ({ value: r3(value), zScore: sd === 0 ? 0 : r3((value - avg) / sd) }))
+    .filter((entry) => Math.abs(entry.zScore) >= 2)
+    .sort((a, b) => Math.abs(b.zScore) - Math.abs(a.zScore))
+    .slice(0, 10)
+
+  // Trend: first half vs last half of the rows (assumes an ordered base query).
+  let trend: Record<string, unknown> | undefined
+  if (values.length >= 4) {
+    const half = Math.floor(values.length / 2)
+    const first = values.slice(0, half)
+    const second = values.slice(values.length - half)
+    const firstAvg = mean(first)
+    const secondAvg = mean(second)
+    const changePct = firstAvg === 0
+      ? (secondAvg === 0 ? 0 : 100)
+      : ((secondAvg - firstAvg) / Math.abs(firstAvg)) * 100
+    trend = {
+      basis: `first ${half} vs last ${half} rows — meaningful when the base query is ordered by time`,
+      firstHalfAvg: r3(firstAvg),
+      secondHalfAvg: r3(secondAvg),
+      changePct: r3(changePct),
+      direction: changePct > 2 ? 'up' : changePct < -2 ? 'down' : 'flat',
+    }
+  }
+
+  // Grouped view: contributors, concentration and Pareto coverage.
+  let topContributors: Record<string, unknown>[] | undefined
+  let concentration: Record<string, unknown> | undefined
+  if (dimension !== undefined) {
+    const grouped = await ctx.run(
+      `SELECT ${dimension} AS dimension, SUM(${measure}) AS value, COUNT(*) AS count
+       FROM (\n${baseSql}\n) AS rd_insight_grp
+       GROUP BY ${dimension}
+       ORDER BY value DESC`,
+    )
+    const rows = grouped.rows
+      .map((row) => ({ dimension: row.dimension, value: Number(row.value) }))
+      .filter((row) => Number.isFinite(row.value))
+    const groupTotal = rows.reduce((sum, row) => sum + row.value, 0)
+    if (rows.length > 0) {
+      topContributors = rows.slice(0, topN).map((row) => ({
+        dimension: row.dimension,
+        value: r3(row.value),
+        share: groupTotal === 0 ? 0 : r3(row.value / groupTotal),
+      }))
+      const covered = (count: number): number => rows.slice(0, count).reduce((sum, row) => sum + row.value, 0)
+      const used = Math.min(topN, rows.length)
+      concentration = {
+        groups: rows.length,
+        top1Share: groupTotal === 0 ? 0 : r3(covered(1) / groupTotal),
+        topNGroups: used,
+        topNShare: groupTotal === 0 ? 0 : r3(covered(used) / groupTotal),
+        pareto80Groups: paretoGroups(rows, groupTotal, 0.8),
+      }
+    }
+  }
+
+  return {
+    measure,
+    ...(dimension !== undefined ? { dimension } : {}),
+    summary,
+    ...(trend !== undefined ? { trend } : {}),
+    ...(topContributors !== undefined ? { topContributors } : {}),
+    ...(concentration !== undefined ? { concentration } : {}),
+    anomalies,
   }
 }

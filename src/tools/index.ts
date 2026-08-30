@@ -15,11 +15,11 @@ import type { ValueSchemaSpec } from '@deepseek-ai/dsh-tools'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { limitsFor, type Config } from '../config.ts'
 import type { DataSourceRegistry } from '../registry.ts'
-import type { DataSourceProvider, RdChartType, RdSeriesInput } from '../types.ts'
+import type { DataSourceProvider, RdChartType, RdChartTypeInput, RdSeriesInput } from '../types.ts'
 import type { SemanticLayer } from '../semantic/layer.ts'
 import { guardSelectOnly, GuardError } from '../sql/guard.ts'
-import { buildEchartsOption, optionDataPoints } from '../charts/echarts-option.ts'
-import { correlation, distribution, profile, topn, type AnalysisContext, type AnalysisKind } from '../analysis/analyze.ts'
+import { autoChartType, buildEchartsOption, optionDataPoints } from '../charts/echarts-option.ts'
+import { correlation, distribution, insight, profile, topn, type AnalysisContext, type AnalysisKind } from '../analysis/analyze.ts'
 import { textTable } from './text.ts'
 import { zh, en } from '../i18n/host.ts'
 import { tpl } from '../i18n/index.ts'
@@ -237,8 +237,8 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
       datasource: { type: 'string', required: true, description: 'Data source name (provenance).' },
       title: { type: 'string', required: true, description: 'Human chart title (Chinese when the user writes Chinese).' },
       chartType: {
-        type: 'string', required: true, enum: ['line', 'bar', 'pie', 'scatter', 'heatmap', 'kpi'],
-        description: 'line/bar: category x + numeric series; pie: nameField+valueField; scatter: numeric x/y; heatmap: x+y category + value; kpi: single value.',
+        type: 'string', required: true, enum: ['auto', 'line', 'bar', 'pie', 'scatter', 'heatmap', 'kpi', 'boxplot', 'funnel'],
+        description: 'auto: host infers the best family from the result shape (preferred). line/bar: category x + numeric series; pie: nameField+valueField; scatter: numeric x/y; heatmap: x+y category + value; kpi: single value; boxplot: category x + raw value column (quartiles per group); funnel: nameField+valueField stages.',
       },
       xField: { type: 'string', description: 'Category axis field (line/bar/heatmap) or x field (scatter).' },
       yFields: { type: 'array', items: { type: 'string' }, description: 'Value series fields for line/bar/scatter (each becomes a legend series).' },
@@ -301,8 +301,18 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
       const series: RdSeriesInput[] = Array.isArray(args.yFields)
         ? (args.yFields as string[]).map((field) => ({ field }))
         : []
+      const requestedType = args.chartType as RdChartTypeInput
+      const resolvedType: RdChartType = requestedType === 'auto'
+        ? autoChartType({
+          data: capped,
+          ...(args.xField !== undefined ? { xField: args.xField } : {}),
+          ...(series.length > 0 ? { series } : {}),
+          ...(args.nameField !== undefined ? { nameField: args.nameField } : {}),
+          ...(args.valueField !== undefined ? { valueField: args.valueField } : {}),
+        })
+        : requestedType
       const option = buildEchartsOption({
-        chartType: args.chartType as RdChartType,
+        chartType: resolvedType,
         title: args.title,
         data: capped,
         ...(args.xField !== undefined ? { xField: args.xField } : {}),
@@ -316,7 +326,7 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
         title: args.title,
         datasource: args.datasource,
         ...(sql !== undefined ? { sql } : {}),
-        chartType: args.chartType as RdChartType,
+        chartType: resolvedType,
         echartsOption: option,
         data: capped,
         columns,
@@ -324,7 +334,8 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
       } as const
       return {
         chartId: event.chartId,
-        chartType: event.chartType,
+        chartType: resolvedType,
+        autoResolved: requestedType === 'auto',
         points: optionDataPoints(option),
         rendered: true,
         chart: event,
@@ -337,14 +348,17 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
     description: s(config, 'tool.analyze_data.desc'),
     parameters: {
       datasource: { type: 'string', required: true, description: 'Data source name.' },
-      analysis: { type: 'string', required: true, enum: ['profile', 'topn', 'correlation', 'distribution'], description: 'Analysis kind.' },
+      analysis: {
+        type: 'string', required: true, enum: ['profile', 'topn', 'correlation', 'distribution', 'insight'],
+        description: 'Analysis kind. insight: headline stats + trend + top contributors with share + Pareto concentration + z-score outliers (dimension/metric/topN).',
+      },
       sql: { type: 'string', required: true, description: 'Base SELECT (guardrails apply as in run_sql).' },
       column: { type: 'string', description: 'correlation: first column; distribution: the column.' },
       column2: { type: 'string', description: 'correlation: second column.' },
-      dimension: { type: 'string', description: 'topn: group-by column.' },
-      metric: { type: 'string', description: 'topn: aggregated column (omit for COUNT(*)).' },
+      dimension: { type: 'string', description: 'topn: group-by column; insight: group-by column for contributor shares.' },
+      metric: { type: 'string', description: 'topn: aggregated column (omit for COUNT(*)); insight: measure column (omit to auto-detect the first numeric column).' },
       aggregate: { type: 'string', enum: ['count', 'sum', 'avg', 'min', 'max'], description: 'topn: aggregation (default count / sum when metric given).' },
-      topN: { type: 'number', description: 'topn: how many groups (default 10, max 100).' },
+      topN: { type: 'number', description: 'topn: how many groups (default 10, max 100); insight: how many contributors (default 5, max 50).' },
       buckets: { type: 'number', description: 'distribution: bin count (default 12, max 60).' },
     },
     output: {
@@ -388,11 +402,18 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
       } else if (kind === 'correlation') {
         if (args.column === undefined || args.column2 === undefined) throw new GuardError('correlation requires "column" and "column2".')
         result = await correlation(ctx, guarded.sql, { column: args.column, column2: args.column2 })
-      } else {
+      } else if (kind === 'distribution') {
         if (args.column === undefined) throw new GuardError('distribution requires "column".')
         result = await distribution(ctx, guarded.sql, {
           column: args.column,
           ...(args.buckets !== undefined ? { buckets: args.buckets } : {}),
+        })
+      } else {
+        // insight — dimension and metric are both optional (metric auto-detects).
+        result = await insight(ctx, guarded.sql, {
+          ...(args.dimension !== undefined ? { dimension: args.dimension } : {}),
+          ...(args.metric !== undefined ? { measure: args.metric } : {}),
+          ...(args.topN !== undefined ? { topN: args.topN } : {}),
         })
       }
       return {
