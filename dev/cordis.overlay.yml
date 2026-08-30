@@ -2,20 +2,20 @@
 # with this plugin loaded straight from the built lib and a demo SQLite db.
 #
 #   cd /Users/wang.yang/Codes/Github/deepseek-harness
-#   pnpm dsh web --patch /Users/wang.yang/ZCodeProject/rd-data-agent/dev/cordis.overlay.yml
+#   pnpm dsh web --patch /Users/wang.yang/ZCodeProject/data-agent/dev/cordis.overlay.yml
 #
 # The row references the BUILT entry (node scripts/build.mjs first). Node
 # module resolution walks up from lib/index.js, so @deepseek-ai/* externals
-# resolve through rd-data-agent/node_modules (scripts/link-dsh.mjs).
+# resolve through data-agent/node_modules (scripts/link-dsh.mjs).
 
 - insert:
     - id: rd-data-analysis
-      name: '/Users/wang.yang/ZCodeProject/rd-data-agent/lib/index.js'
+      name: '/Users/wang.yang/ZCodeProject/data-agent/lib/index.js'
       config:
         dataSources:
           - name: demo
             type: sqlite
-            file: '/Users/wang.yang/ZCodeProject/rd-data-agent/demo/demo.db'
+            file: '/Users/wang.yang/ZCodeProject/data-agent/demo/demo.db'
             approvalMode: auto
           - name: spark-lake
             type: spark
