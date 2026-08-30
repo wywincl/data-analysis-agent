@@ -20,6 +20,7 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     resultCacheTtlMs: 30 * 60_000,
     asyncJobTtlMs: 10 * 60_000,
     asyncJobCacheSize: 20,
+    auditMaxEntries: 500,
     locale: 'zh',
     currentRole: '',
     ...overrides,

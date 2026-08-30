@@ -16,6 +16,7 @@ import type { DataSourceRegistry } from './registry.ts'
 import type { SemanticLayer } from './semantic/layer.ts'
 import { chartFromResultMeta, type RdChartEvent } from './events.ts'
 import { guardSelectOnly, GuardError } from './sql/guard.ts'
+import type { QueryAuditStore } from './audit.ts'
 import { renderStandaloneHtml, toCsv } from './shared/export-template.ts'
 import { renderChartImage } from './charts/server-render.ts'
 import echartsUmd from 'echarts-umd-text'
@@ -60,7 +61,7 @@ function s(config: Config, key: keyof typeof zh): string {
   return config.locale === 'en' ? en[key] : zh[key]
 }
 
-export function registerCommands(ctx: Context, config: Config, registry: DataSourceRegistry, semantic: SemanticLayer): void {
+export function registerCommands(ctx: Context, config: Config, registry: DataSourceRegistry, semantic: SemanticLayer, audit: QueryAuditStore): void {
   ctx.commands.register({
     name: 'data-sources',
     description: s(config, 'cmd.data-sources.desc'),
@@ -220,14 +221,80 @@ export function registerCommands(ctx: Context, config: Config, registry: DataSou
         const configured = config.dataSources.find((ds) => ds.name === datasource)
         const { timeoutMs, maxRows } = limitsFor(config, configured)
         const guarded = guardSelectOnly(sql, provider.dialect, maxRows)
-        const result = await provider.query(guarded.sql, {
-          timeoutMs,
-          maxRows,
-        })
-        const note = result.truncated ? `\n(truncated to row cap; ${result.rowCount} rows matched)` : ''
-        return { kind: 'success', text: tpl(s(config, 'cmd.data-sql.success'), { ds: datasource, count: result.rowCount, note, table: textTable(result.columns.map((col) => col.name), result.rows) }) }
+        const started = Date.now()
+        try {
+          const result = await provider.query(guarded.sql, {
+            timeoutMs,
+            maxRows,
+          })
+          audit.record({
+            kind: 'command',
+            datasource: provider.name,
+            sql: guarded.sql,
+            tablesTouched: guarded.tables,
+            rowCount: result.rowCount,
+            durationMs: Date.now() - started,
+            truncated: result.truncated,
+            role: config.currentRole,
+            meta: { command: 'data-sql' },
+          })
+          const note = result.truncated ? `\n(truncated to row cap; ${result.rowCount} rows matched)` : ''
+          return { kind: 'success', text: tpl(s(config, 'cmd.data-sql.success'), { ds: datasource, count: result.rowCount, note, table: textTable(result.columns.map((col) => col.name), result.rows) }) }
+        } catch (error) {
+          audit.record({
+            kind: 'command',
+            datasource: provider.name,
+            sql: guarded.sql,
+            durationMs: Date.now() - started,
+            role: config.currentRole,
+            error: error instanceof Error ? error.message : String(error),
+            meta: { command: 'data-sql' },
+          })
+          throw error
+        }
       } catch (error) {
         return { kind: 'error', text: error instanceof GuardError || error instanceof Error ? error.message : String(error) }
+      }
+    },
+  })
+
+  // Governance: query audit trail + cost metering over every query path.
+  ctx.commands.register({
+    name: 'data-history',
+    description: s(config, 'cmd.data-history.desc'),
+    input: { hint: '[n]' },
+    recordInput: false,
+    handler: (invocation): CommandResult => {
+      const all = audit.all()
+      if (all.length === 0) return { kind: 'error', text: s(config, 'cmd.data-history.empty') }
+      const requested = Number.parseInt(invocation.rawInput.trim(), 10)
+      const n = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 200) : 20
+      const summary = audit.summary()
+      const summaryLines = summary.map((row) =>
+        tpl(s(config, 'cmd.data-history.summaryRow'), {
+          ds: row.datasource, queries: row.queries, rows: row.rows,
+          ms: row.totalMs, avg: row.avgMs, errors: row.errors, cost: row.cost,
+        }),
+      ).join('\n')
+      const entries = audit.recent(n)
+      const entryLines = entries.map((entry) =>
+        tpl(s(config, 'cmd.data-history.entry'), {
+          time: entry.at.slice(11, 19),
+          kind: entry.kind,
+          ds: entry.datasource,
+          rows: entry.rowCount ?? '–',
+          ms: entry.durationMs,
+          role: entry.role === '' ? '–' : entry.role,
+          status: entry.error !== undefined ? ` ✗ ${entry.error.slice(0, 80)}` : '',
+          sql: entry.sql.replace(/\s+/g, ' ').slice(0, 100),
+        }),
+      ).join('\n')
+      return {
+        kind: 'success',
+        text: tpl(s(config, 'cmd.data-history.header'), { count: all.length, kept: n }) + '\n\n' +
+          s(config, 'cmd.data-history.summaryHeader') + '\n' + summaryLines + '\n\n' +
+          s(config, 'cmd.data-history.entriesHeader') + '\n' + entryLines + '\n\n' +
+          s(config, 'cmd.data-history.costNote'),
       }
     },
   })

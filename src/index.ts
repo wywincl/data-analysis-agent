@@ -31,6 +31,7 @@ import { createSparkLivyProvider } from './datasources/spark-livy.ts'
 import { createDuckdbProvider } from './datasources/duckdb.ts'
 import { probeProvider } from './datasources/probe.ts'
 import { JobStore } from './jobs.ts'
+import { QueryAuditStore } from './audit.ts'
 import type { HealthStatus } from './health.ts'
 import { SemanticLayer } from './semantic/layer.ts'
 import { registerSemanticTools } from './semantic/tools.ts'
@@ -116,7 +117,22 @@ export function apply(ctx: Context, config: ConfigType): void {
     config.resultCacheTtlMs,
     config.resultCacheSize,
   )
-  const jobs = new JobStore(config.asyncJobTtlMs, config.asyncJobCacheSize)
+  const audit = new QueryAuditStore(config.auditMaxEntries)
+  const jobs = new JobStore(config.asyncJobTtlMs, config.asyncJobCacheSize, (job) => {
+    // Async jobs audit at settlement (succeeded / failed / cancelled).
+    audit.record({
+      kind: 'async',
+      datasource: job.datasource,
+      sql: job.sql,
+      tablesTouched: job.tablesTouched,
+      rowCount: job.rowCount,
+      durationMs: (job.finishedAt ?? Date.now()) - (job.startedAt ?? job.createdAt),
+      truncated: job.truncated,
+      role: config.currentRole,
+      ...(job.error !== undefined ? { error: job.error } : {}),
+      meta: { jobId: job.jobId, status: job.status },
+    })
+  })
   const semantic = new SemanticLayer(config.semanticFile === '' ? undefined : config.semanticFile, () => { pushSemanticSummary() })
   ctx.effect(() => () => {
     void registry.close()
@@ -260,10 +276,10 @@ export function apply(ctx: Context, config: ConfigType): void {
   }
   wireDataSources()
 
-  registerTools(ctx, config, registry, semantic, jobs)
-  registerSemanticTools(ctx, config, registry, semantic)
+  registerTools(ctx, config, registry, semantic, jobs, audit)
+  registerSemanticTools(ctx, config, registry, semantic, audit)
   registerApprovalGate(ctx, config)
-  registerCommands(ctx, config, registry, semantic)
+  registerCommands(ctx, config, registry, semantic, audit)
 
   // Web workbench card: the settings namespace mirrors the plugin config.
   // Writes hot-swap connections (providers rebuild) and rewire the semantic

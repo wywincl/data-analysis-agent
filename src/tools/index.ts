@@ -18,6 +18,7 @@ import type { DataSourceRegistry } from '../registry.ts'
 import type { DataSourceProvider, RdChartType, RdChartTypeInput, RdSeriesInput } from '../types.ts'
 import type { SemanticLayer } from '../semantic/layer.ts'
 import type { JobStore } from '../jobs.ts'
+import type { QueryAuditStore } from '../audit.ts'
 import { guardSelectOnly, GuardError } from '../sql/guard.ts'
 import { autoChartType, buildEchartsOption, optionDataPoints } from '../charts/echarts-option.ts'
 import { correlation, distribution, insight, profile, topn, type AnalysisContext, type AnalysisKind } from '../analysis/analyze.ts'
@@ -44,8 +45,45 @@ function s(config: Config, key: keyof typeof zh): string {
 }
 
 /** Register every tool; returns nothing (registrations are effects on ctx). */
-export function registerTools(ctx: Context, config: Config, registry: DataSourceRegistry, semantic: SemanticLayer, jobs: JobStore): void {
+export function registerTools(ctx: Context, config: Config, registry: DataSourceRegistry, semantic: SemanticLayer, jobs: JobStore, audit: QueryAuditStore): void {
   const { modelRowCap } = config
+
+  /** Time a provider query and land it in the audit log (cost metering). */
+  async function auditedQuery(
+    kind: import('../audit.ts').AuditKind,
+    provider: DataSourceProvider,
+    sql: string,
+    options: { timeoutMs: number, maxRows: number, signal?: AbortSignal },
+    meta: Record<string, string> = {},
+  ): Promise<import('../types.ts').QueryResult> {
+    const started = Date.now()
+    try {
+      const result = await provider.query(sql, options)
+      audit.record({
+        kind,
+        datasource: provider.name,
+        sql,
+        tablesTouched: undefined,
+        rowCount: result.rowCount,
+        durationMs: Date.now() - started,
+        truncated: result.truncated,
+        role: config.currentRole,
+        meta,
+      })
+      return result
+    } catch (error) {
+      audit.record({
+        kind,
+        datasource: provider.name,
+        sql,
+        durationMs: Date.now() - started,
+        role: config.currentRole,
+        error: error instanceof Error ? error.message : String(error),
+        meta,
+      })
+      throw error
+    }
+  }
 
   ctx.tools.register(defineTool({
     name: 'list_data_sources',
@@ -200,11 +238,11 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
       const { timeoutMs, maxRows: sourceMaxRows } = limitsFor(config, configured)
       const maxRows = Math.min(Math.max(args.maxRows ?? sourceMaxRows, 1), 10_000)
       const guarded = guardSelectOnly(args.sql, provider.dialect, maxRows)
-      const result = await provider.query(guarded.sql, {
+      const result = await auditedQuery('run_sql', provider, guarded.sql, {
         timeoutMs,
         maxRows,
         signal: exec.signal,
-      })
+      }, { reason: args.reason })
       const resultId = crypto.randomUUID()
       registry.putResult({
         resultId,
@@ -284,11 +322,11 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
         const provider = requireProvider(registry, args.datasource)
         const configured = config.dataSources.find((ds) => ds.name === args.datasource)
         const guarded = guardSelectOnly(args.sql, provider.dialect, config.chartDataCap)
-        const result = await provider.query(guarded.sql, {
+        const result = await auditedQuery('run_sql', provider, guarded.sql, {
           timeoutMs: configured?.timeoutMs ?? config.defaultTimeoutMs,
           maxRows: config.chartDataCap,
           signal: exec.signal,
-        })
+        }, { reason: `render_chart: ${args.title}` })
         rows = result.rows as readonly Record<string, JsonValue>[]
         columns = result.columns.map((col) => ({ ...col }))
         sql = guarded.sql
@@ -389,11 +427,11 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
       const guarded = guardSelectOnly(args.sql, provider.dialect, limitsFor(config, configured).maxRows)
       const ctx: AnalysisContext = {
         dialect: provider.dialect,
-        run: (sql) => provider.query(sql, {
+        run: (sql) => auditedQuery('analyze', provider, sql, {
           timeoutMs,
           maxRows: 20_000,
           signal: exec.signal,
-        }),
+        }, { analysis: args.analysis }),
       }
       const kind = args.analysis as AnalysisKind
       let result: Record<string, unknown>

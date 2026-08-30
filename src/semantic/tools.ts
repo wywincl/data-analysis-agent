@@ -13,13 +13,14 @@ import type { DataSourceRegistry } from '../registry.ts'
 import type { SemanticLayer } from './layer.ts'
 import type { LintIssue } from './types.ts'
 import { guardSelectOnly, GuardError } from '../sql/guard.ts'
+import type { QueryAuditStore } from '../audit.ts'
 import { textTable } from '../tools/text.ts'
 import { zh, en, type HostLocale } from '../i18n/host.ts'
 import { formatLintIssues } from './lint.ts'
 import { tpl } from '../i18n/index.ts'
 
 /** Register the semantic-layer tools (no-op when no semanticFile is set — the catalog tools still explain how to enable it). */
-export function registerSemanticTools(ctx: Context, config: Config, registry: DataSourceRegistry, semantic: SemanticLayer): void {
+export function registerSemanticTools(ctx: Context, config: Config, registry: DataSourceRegistry, semantic: SemanticLayer, audit: QueryAuditStore): void {
   function s(key: keyof typeof zh): string {
     return config.locale === 'en' ? en[key] : zh[key]
   }
@@ -131,11 +132,36 @@ export function registerSemanticTools(ctx: Context, config: Config, registry: Da
       const configured = config.dataSources.find((ds) => ds.name === resolved.datasource)
       const { timeoutMs, maxRows } = limitsFor(config, configured)
       const guarded = guardSelectOnly(built.sql, provider.dialect, maxRows)
-      const result = await provider.query(guarded.sql, {
-        timeoutMs,
-        maxRows,
-        signal: exec.signal,
-      })
+      const started = Date.now()
+      let result: Awaited<ReturnType<typeof provider.query>>
+      try {
+        result = await provider.query(guarded.sql, {
+          timeoutMs,
+          maxRows,
+          signal: exec.signal,
+        })
+        audit.record({
+          kind: 'query_metric',
+          datasource: provider.name,
+          sql: guarded.sql,
+          rowCount: result.rowCount,
+          durationMs: Date.now() - started,
+          truncated: result.truncated,
+          role: config.currentRole,
+          meta: { metric: args.metric },
+        })
+      } catch (error) {
+        audit.record({
+          kind: 'query_metric',
+          datasource: provider.name,
+          sql: guarded.sql,
+          durationMs: Date.now() - started,
+          role: config.currentRole,
+          error: error instanceof Error ? error.message : String(error),
+          meta: { metric: args.metric },
+        })
+        throw error
+      }
       const resultId = crypto.randomUUID()
       registry.putResult({
         resultId,

@@ -61,6 +61,8 @@ export class JobStore {
   constructor(
     private readonly ttlMs: number,
     private readonly size: number,
+    /** Optional sink invoked exactly once when a job reaches a terminal state. */
+    private readonly onSettle?: (job: QueryJob) => void,
   ) {}
 
   /**
@@ -93,17 +95,21 @@ export class JobStore {
     try {
       const result = await provider.query(seed.sql, { ...options, signal: controller.signal })
       this.results.set(seed.jobId, result)
-      this.jobs.set(seed.jobId, { ...job, status: 'succeeded', finishedAt: Date.now(), rowCount: result.rowCount, truncated: result.truncated })
+      const settled: QueryJob = { ...job, status: 'succeeded', finishedAt: Date.now(), rowCount: result.rowCount, truncated: result.truncated }
+      this.jobs.set(seed.jobId, settled)
+      this.onSettle?.(settled)
     } catch (error) {
       // If cancel() flipped us to cancelled (and aborted the controller), stay
       // cancelled rather than overwriting with a failure.
       if (this.jobs.get(seed.jobId)?.status === 'cancelled') return
-      this.jobs.set(seed.jobId, {
+      const settled: QueryJob = {
         ...job,
         status: 'failed',
         finishedAt: Date.now(),
         error: error instanceof Error ? error.message : String(error),
-      })
+      }
+      this.jobs.set(seed.jobId, settled)
+      this.onSettle?.(settled)
     } finally {
       this.controllers.delete(seed.jobId)
     }
@@ -114,9 +120,11 @@ export class JobStore {
     const job = this.jobs.get(jobId)
     if (job === undefined) return false
     if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') return false
-    this.jobs.set(jobId, { ...job, status: 'cancelled', finishedAt: Date.now() })
+    const settled: QueryJob = { ...job, status: 'cancelled', finishedAt: Date.now() }
+    this.jobs.set(jobId, settled)
     this.controllers.get(jobId)?.abort()
     this.controllers.delete(jobId)
+    this.onSettle?.(settled)
     return true
   }
 

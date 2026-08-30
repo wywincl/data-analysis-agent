@@ -92,4 +92,25 @@ describe('JobStore', () => {
     expect(store.get('b')?.jobId).toBe('b')
     expect(store.get('c')?.jobId).toBe('c')
   })
+
+  it('fires the onSettle hook exactly once per terminal state (audit wiring)', async () => {
+    const settled: { jobId: string, status: string, rowCount?: number }[] = []
+    const store = new JobStore(60_000, 20, (job) => settled.push({ jobId: job.jobId, status: job.status, ...(job.rowCount !== undefined ? { rowCount: job.rowCount } : {}) }))
+    store.start('ok', fakeProvider(), 'SELECT 1', { timeoutMs: 5_000, maxRows: 10 })
+    store.start('bad', fakeProvider('demo', { fail: true }), 'SELECT 2', { timeoutMs: 5_000, maxRows: 10 })
+    store.start('killed', fakeProvider('demo', { onSignal: true }), 'SELECT 3', { timeoutMs: 5_000, maxRows: 10 })
+    store.cancel('killed')
+    await vi.waitFor(() => {
+      expect(settled.length).toBeGreaterThanOrEqual(3)
+    })
+    const byId = Object.fromEntries(settled.map((entry) => [entry.jobId, entry.status]))
+    expect(byId.ok).toBe('succeeded')
+    expect(byId.bad).toBe('failed')
+    expect(byId.killed).toBe('cancelled')
+    expect(settled.find((entry) => entry.jobId === 'ok')?.rowCount).toBe(3)
+    // Polling does not re-fire the hook.
+    store.get('ok')
+    store.get('bad')
+    expect(settled).toHaveLength(3)
+  })
 })

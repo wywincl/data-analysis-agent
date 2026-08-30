@@ -112,6 +112,8 @@ export interface Config {
   asyncJobTtlMs: number
   /** Max async jobs retained (evicts oldest beyond this). */
   asyncJobCacheSize: number
+  /** Query audit log capacity (entries retained for /data-history); 0 disables auditing. */
+  auditMaxEntries: number
   /** Interface language: 'zh' (default) or 'en'. */
   locale: string
   /**
@@ -171,6 +173,7 @@ export const Config: Schema<Config> = Schema.object({
   resultCacheTtlMs: Schema.number().default(30 * 60_000).description('resultId 引用 TTL(毫秒) | resultId reference TTL in ms, consumed by render_chart'),
   asyncJobTtlMs: Schema.number().default(10 * 60_000).description('异步查询任务结果 TTL(毫秒) | Async query job result TTL in ms'),
   asyncJobCacheSize: Schema.number().default(20).description('保留的异步任务数上限(超出逐出最旧) | Max async jobs retained (evicts oldest beyond this)'),
+  auditMaxEntries: Schema.number().default(500).description('查询审计日志容量(条,供 /data-history 查看;0 关闭审计) | Query audit log capacity for /data-history; 0 disables auditing'),
   locale: Schema.string().default('zh').description('界面语言: zh(中文) 或 en(English)'),
   currentRole: Schema.string().default('').description('当前角色(行级安全):非空时,实体的 rowFilter 会按 {role} 注入,敏感列对无 readRoles 的角色脱敏 | Active role for RLS: when set, entity rowFilter is injected with {role} and sensitive columns are masked'),
 })
@@ -191,6 +194,7 @@ export function validateConfig(config: Config): void {
   if (config.resultCacheSize < 1) throw new Error(`rd-data-analysis: ${gte('resultCacheSize', 1)}`)
   if (config.resultCacheTtlMs < 0) throw new Error(`rd-data-analysis: ${gte('resultCacheTtlMs', 0)}`)
   if (config.asyncJobCacheSize < 1) throw new Error(`rd-data-analysis: ${gte('asyncJobCacheSize', 1)}`)
+  if (config.auditMaxEntries < 0) throw new Error(`rd-data-analysis: ${gte('auditMaxEntries', 0)}`)
   if (config.asyncJobTtlMs < 0) throw new Error(`rd-data-analysis: ${gte('asyncJobTtlMs', 0)}`)
 
   const names = new Set<string>()

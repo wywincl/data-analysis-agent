@@ -58,6 +58,14 @@ export interface HostStrings {
   'cmd.data-dashboard.noCharts': string
   'cmd.data-dashboard.success': string
   'cmd.data-export-png.desc': string
+  'cmd.data-history.desc': string
+  'cmd.data-history.empty': string
+  'cmd.data-history.header': string
+  'cmd.data-history.summaryHeader': string
+  'cmd.data-history.summaryRow': string
+  'cmd.data-history.entriesHeader': string
+  'cmd.data-history.entry': string
+  'cmd.data-history.costNote': string
   'cmd.data-export-png.noCharts': string
   'cmd.data-export-png.success': string
   'cmd.data-export-png.svgNote': string
@@ -201,6 +209,14 @@ export const zh: HostStrings = {
   'cmd.data-dashboard.noCharts': '此会话中暂无图表可导出 — 请先让代理渲染图表。',
   'cmd.data-dashboard.success': '仪表板已导出: {file}\n{count} 个图表，自包含（可离线工作）。提示: 对话中的每个图表节点也有单图 HTML/PNG/CSV 导出按钮。',
   'cmd.data-export-png.desc': '服务端将本会话所有图表渲染为图片文件(优先 PNG;未安装 node-canvas 时降级为 SVG)',
+  'cmd.data-history.desc': '查看查询审计:最近 n 条(默认 20)与按数据源聚合的用量/成本',
+  'cmd.data-history.empty': '审计日志为空 — 尚无查询执行记录(或 auditMaxEntries=0 已关闭审计)。',
+  'cmd.data-history.header': '查询审计 — 共 {count} 条记录,显示最近 {kept} 条:',
+  'cmd.data-history.summaryHeader': '按数据源聚合(用量与成本):',
+  'cmd.data-history.summaryRow': '- {ds}: {queries} 次查询 · {rows} 行 · 共 {ms}ms(均 {avg}ms)· 失败 {errors} · 成本 {cost}',
+  'cmd.data-history.entriesHeader': '最近记录:',
+  'cmd.data-history.entry': '- {time} [{kind}] {ds} · {rows} 行 · {ms}ms · 角色 {role}{status}\n    {sql}',
+  'cmd.data-history.costNote': '成本为近似计量分:每返回 1 行计 1 分 + 每秒执行计 10 分,用于发现失控扫描,并非账单。',
   'cmd.data-export-png.noCharts': '此会话中暂无图表可导出 — 请先让代理渲染图表。',
   'cmd.data-export-png.success': '已导出 {count} 个图片到 {dir}:\n{files}',
   'cmd.data-export-png.svgNote': '\n注意: 其中 {count} 个为 SVG(未安装可选的 node-canvas 原生模块;`npm i canvas` 后重启即可输出 PNG)。',
@@ -341,6 +357,14 @@ export const en: HostStrings = {
   'cmd.data-dashboard.noCharts': 'No charts to export yet — ask the agent to render a chart first.',
   'cmd.data-dashboard.success': 'Dashboard exported: {file}\n{count} charts, self-contained (works offline). Tip: each chart node in the chat also has per-chart HTML/PNG/CSV export buttons.',
   'cmd.data-export-png.desc': 'Render every session chart to an image file server-side (PNG preferred; falls back to SVG when node-canvas is not installed)',
+  'cmd.data-history.desc': 'Query audit trail: the last n entries (default 20) plus per-datasource usage/cost aggregates',
+  'cmd.data-history.empty': 'Audit log is empty — no queries recorded yet (or auditing is disabled via auditMaxEntries=0).',
+  'cmd.data-history.header': 'Query audit — {count} entries total, showing the last {kept}:',
+  'cmd.data-history.summaryHeader': 'Per-datasource aggregates (usage and cost):',
+  'cmd.data-history.summaryRow': '- {ds}: {queries} queries · {rows} rows · {ms}ms total ({avg}ms avg) · {errors} failed · cost {cost}',
+  'cmd.data-history.entriesHeader': 'Recent entries:',
+  'cmd.data-history.entry': '- {time} [{kind}] {ds} · {rows} rows · {ms}ms · role {role}{status}\n    {sql}',
+  'cmd.data-history.costNote': 'Cost is an approximate metering score: 1 per returned row + 10 per second of execution — for spotting runaway scans, not a bill.',
   'cmd.data-export-png.noCharts': 'No charts to export yet — ask the agent to render a chart first.',
   'cmd.data-export-png.success': 'Exported {count} image(s) to {dir}:\n{files}',
   'cmd.data-export-png.svgNote': '\nNote: {count} of them are SVG (the optional node-canvas native module is not installed; `npm i canvas` + restart enables PNG).',
