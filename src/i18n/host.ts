@@ -57,6 +57,10 @@ export interface HostStrings {
   'cmd.data-dashboard.desc': string
   'cmd.data-dashboard.noCharts': string
   'cmd.data-dashboard.success': string
+  'cmd.data-export-png.desc': string
+  'cmd.data-export-png.noCharts': string
+  'cmd.data-export-png.success': string
+  'cmd.data-export-png.svgNote': string
   'cmd.data-csv.desc': string
   'cmd.data-csv.noResults': string
   'cmd.data-csv.success': string
@@ -140,6 +144,9 @@ export interface HostStrings {
   'config.validate.defaultDatasource': string
   'export.html.byline': string
   'export.html.footer': string
+  'export.html.filterHint': string
+  'export.html.clearFilters': string
+  'export.html.filteredNote': string
 }
 
 export const zh: HostStrings = {
@@ -193,6 +200,10 @@ export const zh: HostStrings = {
   'cmd.data-dashboard.desc': '将会话中的所有图表导出为一个自包含 HTML 仪表板',
   'cmd.data-dashboard.noCharts': '此会话中暂无图表可导出 — 请先让代理渲染图表。',
   'cmd.data-dashboard.success': '仪表板已导出: {file}\n{count} 个图表，自包含（可离线工作）。提示: 对话中的每个图表节点也有单图 HTML/PNG/CSV 导出按钮。',
+  'cmd.data-export-png.desc': '服务端将本会话所有图表渲染为图片文件(优先 PNG;未安装 node-canvas 时降级为 SVG)',
+  'cmd.data-export-png.noCharts': '此会话中暂无图表可导出 — 请先让代理渲染图表。',
+  'cmd.data-export-png.success': '已导出 {count} 个图片到 {dir}:\n{files}',
+  'cmd.data-export-png.svgNote': '\n注意: 其中 {count} 个为 SVG(未安装可选的 node-canvas 原生模块;`npm i canvas` 后重启即可输出 PNG)。',
   'cmd.data-csv.desc': '将最新的查询结果导出为 CSV',
   'cmd.data-csv.noResults': '此会话中暂无缓存的结果。',
   'cmd.data-csv.success': 'CSV 已导出: {file} ({count} 行)',
@@ -273,6 +284,9 @@ export const zh: HostStrings = {
   'config.validate.defaultDatasource': 'defaultDatasource "{name}" 未匹配任何已配置的数据源(dataSources: {list})',
   'export.html.byline': '由 RD Data Analysis Agent 导出 · {time} · {count} 个图表 · 离线可交互',
   'export.html.footer': '数据来源见各图「SQL」折叠区。本文件为自包含交互式页面，可直接在浏览器打开。',
+  'export.html.filterHint': '提示:点击柱/折线类目或饼图扇区可跨图筛选;筛选状态保存在 URL 中,复制链接即可分享当前视图。',
+  'export.html.clearFilters': '清除全部筛选',
+  'export.html.filteredNote': '已筛选: {from} 行 → {to} 行',
 }
 
 export const en: HostStrings = {
@@ -326,6 +340,10 @@ export const en: HostStrings = {
   'cmd.data-dashboard.desc': 'Export all session charts as one self-contained HTML dashboard',
   'cmd.data-dashboard.noCharts': 'No charts to export yet — ask the agent to render a chart first.',
   'cmd.data-dashboard.success': 'Dashboard exported: {file}\n{count} charts, self-contained (works offline). Tip: each chart node in the chat also has per-chart HTML/PNG/CSV export buttons.',
+  'cmd.data-export-png.desc': 'Render every session chart to an image file server-side (PNG preferred; falls back to SVG when node-canvas is not installed)',
+  'cmd.data-export-png.noCharts': 'No charts to export yet — ask the agent to render a chart first.',
+  'cmd.data-export-png.success': 'Exported {count} image(s) to {dir}:\n{files}',
+  'cmd.data-export-png.svgNote': '\nNote: {count} of them are SVG (the optional node-canvas native module is not installed; `npm i canvas` + restart enables PNG).',
   'cmd.data-csv.desc': 'Export the latest query result as CSV',
   'cmd.data-csv.noResults': 'No cached results in this session yet.',
   'cmd.data-csv.success': 'CSV exported: {file} ({count} rows)',
@@ -406,4 +424,7 @@ export const en: HostStrings = {
   'config.validate.defaultDatasource': 'defaultDatasource "{name}" matches none of the configured datasources (dataSources: {list})',
   'export.html.byline': 'Exported by RD Data Analysis Agent · {time} · {count} chart(s) · interactive offline',
   'export.html.footer': 'See the "SQL" disclosure on each chart for data provenance. This is a self-contained interactive page — open it directly in a browser.',
+  'export.html.filterHint': 'Tip: click a bar/line category or pie slice to cross-filter every chart; the filter state lives in the URL — copy the link to share this exact view.',
+  'export.html.clearFilters': 'Clear all filters',
+  'export.html.filteredNote': 'Filtered: {from} rows → {to} rows',
 }

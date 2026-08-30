@@ -17,6 +17,7 @@ import type { SemanticLayer } from './semantic/layer.ts'
 import { chartFromResultMeta, type RdChartEvent } from './events.ts'
 import { guardSelectOnly, GuardError } from './sql/guard.ts'
 import { renderStandaloneHtml, toCsv } from './shared/export-template.ts'
+import { renderChartImage } from './charts/server-render.ts'
 import echartsUmd from 'echarts-umd-text'
 import { zh, en, type HostLocale } from './i18n/host.ts'
 import { tpl } from './i18n/index.ts'
@@ -251,6 +252,7 @@ export function registerCommands(ctx: Context, config: Config, registry: DataSou
           echartsOption: chart.echartsOption,
           data: chart.data,
           columns: [...chart.columns],
+          ...(chart.fields !== undefined ? { fields: chart.fields } : {}),
         })),
         { title: name, echartsUmd, locale: config.locale === 'en' ? 'en' as const : 'zh' as const },
       )
@@ -260,6 +262,42 @@ export function registerCommands(ctx: Context, config: Config, registry: DataSou
       return {
         kind: 'success',
         text: tpl(s(config, 'cmd.data-dashboard.success'), { file, count: charts.length }),
+      }
+    },
+  })
+
+  // Server-side image export: every session chart rasterized without a
+  // browser. Prefers PNG via the optional node-canvas module; degrades to
+  // echarts' SSR SVG renderer (no native deps) when it is not installed.
+  ctx.commands.register({
+    name: 'data-export-png',
+    description: s(config, 'cmd.data-export-png.desc'),
+    input: { hint: '[file-name]' },
+    recordInput: false,
+    handler: async (invocation): Promise<CommandResult> => {
+      const charts = sessionCharts(invocation.agent?.session)
+      if (charts.length === 0) {
+        return { kind: 'error', text: s(config, 'cmd.data-export-png.noCharts') }
+      }
+      const name = (invocation.rawInput.trim().replace(/[^\w\u4e00-\u9fa5-]+/g, '-') || `charts-${Date.now()}`).replace(/^-+|-+$/g, '')
+      const dir = resolveExportDir(config)
+      const written: string[] = []
+      let svgCount = 0
+      try {
+        for (const [index, chart] of charts.entries()) {
+          const image = await renderChartImage(chart.echartsOption, { width: 960, height: 540, echartsUmd })
+          const ext = image.kind === 'png' ? 'png' : 'svg'
+          if (image.kind === 'svg') svgCount += 1
+          const file = join(dir, charts.length === 1 ? `${name}.${ext}` : `${name}-${index + 1}.${ext}`)
+          writeFileSync(file, image.kind === 'png' ? image.buffer : image.svg)
+          written.push(file)
+        }
+      } catch (error) {
+        return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
+      }
+      return {
+        kind: 'success',
+        text: tpl(s(config, 'cmd.data-export-png.success'), { dir, count: written.length, files: written.map((file) => `- ${file}`).join('\n'), note: svgCount > 0 ? tpl(s(config, 'cmd.data-export-png.svgNote'), { count: svgCount }) : '' }),
       }
     },
   })

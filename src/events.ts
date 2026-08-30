@@ -31,6 +31,14 @@ export interface RdChartEvent {
   /** Chart data rows (small result sets only, capped by config). */
   readonly data: readonly Record<string, JsonValue>[]
   readonly columns: readonly { readonly name: string, readonly type: string }[]
+  /** Field metadata for client-side cross-filtering in exported dashboards. */
+  readonly fields?: {
+    readonly chartType: string
+    readonly xField?: string
+    readonly yFields?: readonly string[]
+    readonly nameField?: string
+    readonly valueField?: string
+  }
   readonly createdAt: string
 }
 

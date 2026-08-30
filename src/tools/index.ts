@@ -331,6 +331,13 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
         echartsOption: option,
         data: capped,
         columns,
+        fields: {
+          chartType: resolvedType,
+          ...(args.xField !== undefined ? { xField: args.xField } : {}),
+          ...(series.length > 0 ? { yFields: series.map((spec) => spec.field) } : {}),
+          ...(args.nameField !== undefined ? { nameField: args.nameField } : {}),
+          ...(args.valueField !== undefined ? { valueField: args.valueField } : {}),
+        },
         createdAt: new Date().toISOString(),
       } as const
       return {
