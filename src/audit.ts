@@ -50,6 +50,17 @@ export function costUnits(rowCount: number, durationMs: number): number {
   return rowCount + Math.round((durationMs / 1000) * 10)
 }
 
+/**
+ * Stored SQL is truncated: a model-authored statement can reach hundreds of
+ * KB, and the audit is a bounded in-memory ring — without a cap a handful of
+ * giant queries would dominate the store. 4 KB keeps table/shape provenance.
+ */
+const SQL_SNIPPET_LIMIT = 4096
+
+function snippet(sql: string): string {
+  return sql.length > SQL_SNIPPET_LIMIT ? `${sql.slice(0, SQL_SNIPPET_LIMIT)}…(+${sql.length - SQL_SNIPPET_LIMIT} chars)` : sql
+}
+
 /** Bounded, newest-last in-memory audit log. */
 export class QueryAuditStore {
   private readonly entries: AuditEntry[] = []
@@ -60,7 +71,7 @@ export class QueryAuditStore {
   /** Append one entry; returns it (with id + timestamp). No-op when max <= 0 (disabled). */
   record(entry: Omit<AuditEntry, 'id' | 'at'>): AuditEntry | undefined {
     if (this.max <= 0) return undefined
-    const full: AuditEntry = { ...entry, id: this.nextId++, at: new Date().toISOString() }
+    const full: AuditEntry = { ...entry, sql: snippet(entry.sql), id: this.nextId++, at: new Date().toISOString() }
     this.entries.push(full)
     while (this.entries.length > this.max) this.entries.shift()
     return full

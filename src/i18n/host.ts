@@ -135,6 +135,10 @@ export interface HostStrings {
   'lint.unknown-join-entity.hint': string
   'lint.join-unreachable.message': string
   'lint.join-unreachable.hint': string
+  'lint.unknown-key-column.message': string
+  'lint.unknown-key-column.hint': string
+  'lint.enum-filter-value-unknown.message': string
+  'lint.enum-filter-value-unknown.hint': string
   'lint.ratio-missing-sides.message': string
   'lint.ratio-missing-sides.hint': string
   'lint.ratio-unknown-metric.message': string
@@ -169,7 +173,7 @@ export const zh: HostStrings = {
   'workflow.step5': '统计需求使用 **analyze_data**：profile / topn / correlation / distribution——不要手动写重复 SQL。在回答中解释返回的数字。',
   'workflow.step6': '用你实际查询到的数字作答，引用你运行的 SQL，并标注截断（行数上限）或 mock 数据源。如果查询被护栏拒绝，将其重写为单条 SELECT——不要试图绕过护栏。',
   'workflow.qualityRules': 'Text2SQL 质量规则：在 SQL 中过滤（而非事后处理），尽可能在 SQL 中聚合，优先使用显式列列表而非 *，并使用目标数据源的方言（参考 inspect_schema 输出）。',
-  'semantic.sectionTitle': '## 语义层 (语义层)',
+  'semantic.sectionTitle': '## 语义层',
   'semantic.digestPrefix': '当问题匹配受治理指标时，调用 query_metric——永远不要手动重建其 SQL。如果用户要求治理新指标/标签，建议编辑语义文件（{semanticFileHint}）并热加载。',
   'cmd.data-sources.desc': '列出已配置的数据源及其状态',
   'cmd.data-sources.noConfig': '未配置任何数据源。请在数据源列表或插件配置(dataSources)中添加。',
@@ -250,7 +254,7 @@ export const zh: HostStrings = {
   'tool.query_metric.cardPrefix': '指标查询',
   'tool.query_metric.render.success': '指标 "{metric}" 在 "{ds}" 上查询成功 — {count} 行。{note}\nresultId: {rid}  ← 将此值传递给 render_chart\nSQL（从受治理定义生成）:\n{sql}\n\n{table}',
   'tool.query_metric.missingDatasource': '指标 "{metric}" 解析到数据源 "{ds}" 但未配置。修复语义层或添加连接。',
-  'tool.run_query_async.desc': '后台异步执行一条只读 SELECT（适用于长查询/大结果集）。立即返回 jobId 与状态；用 get_query_job 轮询状态，用 get_result_rows 分页拉取结果。SQL 同样经过只读护栏。注意:异步任务不触发人工审批(approvalMode: ask 在此跳过),但一律经过护栏校验。',
+  'tool.run_query_async.desc': '后台异步执行一条只读 SELECT（适用于长查询/大结果集）。立即返回 jobId 与状态；用 get_query_job 轮询状态，用 get_result_rows 分页拉取结果。SQL 同样经过只读护栏。提交时同样受审批模式约束（approvalMode: ask 的数据源会先请求人工批准再入队执行）。',
   'tool.run_query_async.started': '已提交异步查询 "{ds}" — jobId: {jid}, 状态: {status}。用 get_query_job 轮询,用 get_result_rows 取数。',
   'tool.get_query_job.desc': '查询一个异步任务的当前状态(jobId 来自 run_query_async)。返回 status(pending/running/succeeded/failed/cancelled)、行数、错误(若失败)与完成时间。',
   'tool.get_result_rows.desc': '分页拉取一个已成功(succeeded)异步任务的查询结果(offset/limit)。任务未成功时不返回行。',
@@ -283,6 +287,10 @@ export const zh: HostStrings = {
   'lint.unknown-join-entity.hint': 'joins 只能引用 entities 中已定义的实体',
   'lint.join-unreachable.message': '指标 "{metric}" 的 joins 包含不可达实体 "{target}"',
   'lint.join-unreachable.hint': '需通过 entities 的 relationships 串联(本实体 → 关系实体 → …);中间实体也要列进 joins',
+  'lint.unknown-key-column.message': '实体 "{entity}" 的主键列 "{column}" 未在其 columns 中声明',
+  'lint.unknown-key-column.hint': '在 columns 中补齐该列声明,或把 key 改为已声明的列',
+  'lint.enum-filter-value-unknown.message': '指标对枚举列 "{column}" 使用了未声明的值 "{value}"(实体 "{entity}" 声明的值域: {values})',
+  'lint.enum-filter-value-unknown.hint': '把过滤值改为列 values 里声明的取值,或在实体 columns 中把新值补进 values',
   'lint.ratio-missing-sides.message': 'ratio 指标 "{metric}" 缺少 numerator 或 denominator',
   'lint.ratio-missing-sides.hint': 'ratio 需要两个侧边: numerator 与 denominator(各自可引用指标或内联 agg/measure)',
   'lint.ratio-unknown-metric.message': 'ratio 指标 "{metric}" 引用了未定义指标 "{target}"',
@@ -383,7 +391,7 @@ export const en: HostStrings = {
   'tool.render_chart.rendered': 'Chart rendered in the conversation (chartId {cid}, {points} points). The user sees an interactive chart with HTML/PNG/CSV export buttons.',
   'tool.analyze_data.desc': 'Run a built-in statistical analysis over a base SELECT: profile (per-column stats), topn (group-by top N), correlation (Pearson between two numeric columns), distribution (histogram), insight (headline stats, trend direction, top contributors with share, Pareto concentration, z-score outliers; optional dimension/metric/topN). Pass the base SQL; derived queries are generated and executed for you.',
   'tool.analyze_data.complete': 'Analysis "{analysis}" complete — interpret the numbers below and state findings with evidence:',
-  'tool.list_semantic.desc': 'List the semantic layer catalog: governed metrics with their口径 (formula/grain/dimensions/unit), business terms, and table/column business labels. Prefer these governed metrics over hand-written SQL whenever a question maps to one. Pass the metric name to query_metric.',
+  'tool.list_semantic.desc': 'List the semantic layer catalog: governed metrics with their formula/grain (口径, formula/grain/dimensions/unit), business terms, and table/column business labels. Prefer these governed metrics over hand-written SQL whenever a question maps to one. Pass the metric name to query_metric.',
   'tool.list_semantic.error': 'Semantic layer load error (using last good config)',
   'tool.list_semantic.noFile': '(no semantic file configured — set semanticFile in the workbench card or plugin config to enable)',
   'tool.list_semantic.lintWarn': '⚠️ Semantic layer health-check: {count} warnings (non-blocking, fix when convenient):',
@@ -394,8 +402,8 @@ export const en: HostStrings = {
   'tool.list_semantic.empty': 'Semantic layer is empty.',
   'tool.list_semantic.formula': 'Formula',
   'tool.list_semantic.filters': 'Fixed filters',
-  'tool.query_metric.desc': 'Query a GOVERNED metric from the semantic layer (统一口径, audit-safe). Builds the SQL from the metric definition — you only pick the metric id, optional declared dimensions, dimension value filters, and an optional from/to time range. Returns rows plus a resultId for render_chart. Prefer this over run_sql whenever a list_semantic metric matches the question.',
-  'tool.run_query_async.desc': 'Run ONE read-only SELECT in the BACKGROUND (for long queries / large result sets). Returns a jobId and status immediately; poll with get_query_job and page results with get_result_rows. The SQL still passes the read-only guard. Note: async jobs skip interactive approval (approvalMode: ask is bypassed here) but are always guard-validated.',
+  'tool.query_metric.desc': 'Query a GOVERNED metric from the semantic layer (one unified governed definition, audit-safe). Builds the SQL from the metric definition — you only pick the metric id, optional declared dimensions, dimension value filters, and an optional from/to time range. Returns rows plus a resultId for render_chart. Prefer this over run_sql whenever a list_semantic metric matches the question.',
+  'tool.run_query_async.desc': 'Run ONE read-only SELECT in the BACKGROUND (for long queries / large result sets). Returns a jobId and status immediately; poll with get_query_job and page results with get_result_rows. The SQL still passes the read-only guard. Submission is subject to the same approval policy: on a datasource with approvalMode: ask the job is queued only after a human approves.',
   'tool.run_query_async.started': 'Submitted async query on "{ds}" — jobId: {jid}, status: {status}. Poll with get_query_job, fetch rows with get_result_rows.',
   'tool.get_query_job.desc': 'Get the current status of an async job (jobId from run_query_async). Returns status (pending/running/succeeded/failed/cancelled), row count, error (if failed), and finish time.',
   'tool.get_result_rows.desc': 'Page the result rows of a succeeded async job (offset/limit). Returns nothing until the job has succeeded.',
@@ -416,11 +424,11 @@ export const en: HostStrings = {
   'lint.count-with-measure.message': 'With agg: count the measure "{measure}" is ignored (the generated SQL is COUNT(*))',
   'lint.count-with-measure.hint': 'Use agg: count_distinct if you want distinct counting',
   'lint.term-alias-collision.message': 'Term "{term}" name/alias "{name}" collides with term "{owner}"',
-  'lint.term-alias-collision.hint': 'Ambiguous 口径 makes the model pick the wrong term — merge them or rename the alias',
+  'lint.term-alias-collision.hint': 'Ambiguous definitions (口径) make the model pick the wrong term — merge them or rename the alias',
   'lint.metric-shadows-term.message': 'Metric name "{metric}" is identical to term "{term}"',
   'lint.metric-shadows-term.hint': 'Both the metric catalog and the term list are injected into the prompt; identical names are ambiguous',
   'lint.unbounded-metric.message': 'No timeField and no fixed filters — queries aggregate the whole table',
-  'lint.unbounded-metric.hint': 'Add a timeField to support range filters, or constrain the口径 in filters',
+  'lint.unbounded-metric.hint': 'Add a timeField to support range filters, or constrain the metric (口径) in filters',
   'lint.missing-label.message': '{count} metric(s) have no label, so the model only sees the id: {names}',
   'lint.missing-label.hint': 'label is the human name shown in the catalog and the prompt — worth filling in',
   'lint.unknown-relationship-entity.message': 'entity "{entity}" relationships point to an undefined entity "{target}"',
@@ -431,6 +439,10 @@ export const en: HostStrings = {
   'lint.unknown-join-entity.hint': 'joins can only reference entities defined in entities',
   'lint.join-unreachable.message': 'metric "{metric}" joins includes an unreachable entity "{target}"',
   'lint.join-unreachable.hint': 'reach it through entities relationships (this → related → …); list intermediate entities in joins too',
+  'lint.unknown-key-column.message': 'entity "{entity}" primary key column "{column}" is not declared in its columns',
+  'lint.unknown-key-column.hint': 'declare the column in columns, or set key to an already-declared column',
+  'lint.enum-filter-value-unknown.message': 'metric filter uses undeclared value "{value}" for enum column "{column}" (declared domain on entity "{entity}": {values})',
+  'lint.enum-filter-value-unknown.hint': 'use a value declared in the column values, or add the new value to the entity column values',
   'lint.ratio-missing-sides.message': 'ratio metric "{metric}" is missing numerator or denominator',
   'lint.ratio-missing-sides.hint': 'ratio needs two sides: numerator and denominator (each can reference a metric or inline agg/measure)',
   'lint.ratio-unknown-metric.message': 'ratio metric "{metric}" references an undefined metric "{target}"',

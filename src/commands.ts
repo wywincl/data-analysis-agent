@@ -194,6 +194,9 @@ export function registerCommands(ctx: Context, config: Config, registry: DataSou
       if (datasource === undefined || datasource === '') {
         return { kind: 'error', text: s(config, 'cmd.data-schema.usage') }
       }
+      if (registry.get(datasource) === undefined) {
+        return { kind: 'error', text: tpl(s(config, 'cmd.data-test.unknown'), { '0': datasource }) }
+      }
       const schema = await registry.schema(datasource, { signal: undefined })
       if (table !== undefined) {
         const found = schema.tables.find((entry) => entry.name.toLowerCase() === table.toLowerCase())
@@ -279,7 +282,8 @@ export function registerCommands(ctx: Context, config: Config, registry: DataSou
       const entries = audit.recent(n)
       const entryLines = entries.map((entry) =>
         tpl(s(config, 'cmd.data-history.entry'), {
-          time: entry.at.slice(11, 19),
+          // entry.at is UTC ISO — render the operator's local wall clock.
+          time: new Date(entry.at).toLocaleTimeString([], { hour12: false }),
           kind: entry.kind,
           ds: entry.datasource,
           rows: entry.rowCount ?? '–',
@@ -325,7 +329,11 @@ export function registerCommands(ctx: Context, config: Config, registry: DataSou
       )
       const dir = resolveExportDir(config)
       const file = join(dir, `${name}.html`)
-      writeFileSync(file, html, 'utf8')
+      try {
+        writeFileSync(file, html, 'utf8')
+      } catch (error) {
+        return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
+      }
       return {
         kind: 'success',
         text: tpl(s(config, 'cmd.data-dashboard.success'), { file, count: charts.length }),
@@ -382,7 +390,11 @@ export function registerCommands(ctx: Context, config: Config, registry: DataSou
       const name = (invocation.rawInput.trim().replace(/[^\w\u4e00-\u9fa5-]+/g, '-') || `result-${Date.now()}`).replace(/^-+|-+$/g, '')
       const dir = resolveExportDir(config)
       const file = join(dir, `${name}.csv`)
-      writeFileSync(file, toCsv([...latest.columns], [...latest.data]), 'utf8')
+      try {
+        writeFileSync(file, toCsv([...latest.columns], [...latest.data]), 'utf8')
+      } catch (error) {
+        return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
+      }
       return { kind: 'success', text: tpl(s(config, 'cmd.data-csv.success'), { file, count: latest.data.length }) }
     },
   })

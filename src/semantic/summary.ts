@@ -46,6 +46,9 @@ export function buildSemanticSummary(layer: SemanticLayer, locale: HostLocale): 
   const entities = catalog.entities.map((entity) => ({
     table: entity.table,
     ...(entity.label !== undefined ? { label: entity.label } : {}),
+    ...(entity.description !== undefined ? { description: entity.description } : {}),
+    ...(entity.key !== undefined ? { key: entity.key } : {}),
+    ...(entity.relationships !== undefined && entity.relationships.length > 0 ? { relationships: entity.relationships } : {}),
   }))
   const terms = catalog.terms.map((term) => ({ name: term.name, description: term.description }))
   return {

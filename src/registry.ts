@@ -64,14 +64,18 @@ export class DataSourceRegistry {
 
   /** Introspected schema with TTL cache; pass `refresh` to invalidate. */
   async schema(name: string, options: { readonly includeSamples?: boolean, readonly refresh?: boolean, readonly signal?: AbortSignal } = {}): Promise<SchemaInfo> {
+    // Sample-bearing and bare introspections are different payloads — caching
+    // them under one key would serve rows-less schemas to sample requests
+    // (and vice versa) until the TTL expired.
+    const cacheKey = `${name}\u0000samples=${options.includeSamples === true}`
     if (options.refresh !== true) {
-      const cached = this.schemas.get(name)
+      const cached = this.schemas.get(cacheKey)
       if (cached !== undefined && Date.now() - cached.at < this.schemaTtlMs) return cached.value
     }
     const provider = this.get(name)
     if (provider === undefined) throw new Error(`Unknown datasource "${name}".`)
     const schema = await provider.introspect(options)
-    this.schemas.set(name, { value: schema, at: Date.now() })
+    this.schemas.set(cacheKey, { value: schema, at: Date.now() })
     return schema
   }
 

@@ -37,10 +37,12 @@ import {
   METRIC_AGGS,
   type LintIssue,
   type MetricAgg,
+  type SemanticColumnValue,
   type SemanticConfig,
   type SemanticDefaults,
   type SemanticEntity,
   type SemanticMetric,
+  type SemanticRelationship,
   type SemanticTerm,
 } from './types.ts'
 import { isSafeIdentifier } from '../sql/guard.ts'
@@ -126,6 +128,7 @@ function parseEntity(raw: unknown, index: number, file: string): SemanticEntity 
         ...(optionalString(col.description) !== undefined ? { description: String(col.description) } : {}),
         ...(optionalString(col.unit) !== undefined ? { unit: String(col.unit) } : {}),
         ...(entry.columns !== null && typeof col.sensitive === 'boolean' ? { sensitive: col.sensitive } : {}),
+        ...(parseColumnValues(col.values, `${file}: entities[${index}].columns[${columnIndex}].values`)),
       }
     })
   const relationships = entry.relationships === undefined || entry.relationships === null
@@ -141,16 +144,28 @@ function parseEntity(raw: unknown, index: number, file: string): SemanticEntity 
       if (!Array.isArray(on) || on.length !== 2 || typeof on[0] !== 'string' || typeof on[1] !== 'string') {
         throw new SemanticConfigError(`${file}: entities[${index}].relationships[${relationshipIndex}].on must be [thisColumn, relatedColumn]`)
       }
+      const cardinality = rel.cardinality
+      if (cardinality !== undefined && cardinality !== 'many-to-one' && cardinality !== 'one-to-many' && cardinality !== 'one-to-one') {
+        throw new SemanticConfigError(`${file}: entities[${index}].relationships[${relationshipIndex}].cardinality must be many-to-one / one-to-many / one-to-one`)
+      }
       return {
         entity: assertIdent(rel.entity, `${file}: entities[${index}].relationships[${relationshipIndex}].entity`),
         on: [assertIdent(on[0], 'relationship from-column'), assertIdent(on[1], 'relationship to-column')] as [string, string],
-      }
+        ...(optionalString(rel.name) !== undefined ? { name: String(rel.name) } : {}),
+        ...(cardinality !== undefined ? { cardinality: cardinality as SemanticRelationship['cardinality'] } : {}),
+      } as SemanticRelationship
     })
   return {
     ...(assertOptionalIdent(entry.datasource, `${file}: entities[${index}].datasource`) !== undefined
       ? { datasource: entry.datasource as string }
       : {}),
     table: assertIdent(entry.table, `${file}: entities[${index}].table`),
+    ...(assertOptionalIdent(entry.extends, `${file}: entities[${index}].extends`) !== undefined
+      ? { extends: entry.extends as string }
+      : {}),
+    ...(assertOptionalIdent(entry.key, `${file}: entities[${index}].key`) !== undefined
+      ? { key: entry.key as string }
+      : {}),
     ...(optionalString(entry.label) !== undefined ? { label: String(entry.label) } : {}),
     ...(optionalString(entry.description) !== undefined ? { description: String(entry.description) } : {}),
     ...(assertOptionalIdent(entry.timeField, `${file}: entities[${index}].timeField`) !== undefined
@@ -169,6 +184,21 @@ function parseEntity(raw: unknown, index: number, file: string): SemanticEntity 
       ? { readRoles: entry.readRoles as string[] }
       : {}),
   }
+}
+
+/** Parse a column's declared value domain (plain values or value+label objects). */
+function parseColumnValues(raw: unknown, what: string): { values: SemanticColumnValue[] } | Record<string, never> {
+  if (raw === undefined || raw === null) return {}
+  if (!Array.isArray(raw)) throw new SemanticConfigError(`${what} must be an array`)
+  const values = raw.map((entry, index) => {
+    if (typeof entry === 'string' && entry.trim() !== '') return entry
+    if (entry !== null && typeof entry === 'object' && typeof (entry as Record<string, unknown>).value === 'string') {
+      const { value, label } = entry as Record<string, unknown>
+      return { value, ...(optionalString(label) !== undefined ? { label: String(label) } : {}) } as SemanticColumnValue
+    }
+    throw new SemanticConfigError(`${what}[${index}] must be a non-empty string or { value, label? }`)
+  })
+  return values.length > 0 ? { values } : {}
 }
 
 function parseTerm(raw: unknown, index: number, file: string): SemanticTerm {
@@ -304,6 +334,46 @@ function reachableEntities(start: string, entities: Map<string, { entity: Semant
 
 const COLLECTIONS = { entity: 'entities', term: 'terms', metric: 'metrics' } as const
 
+type SemanticColumn = NonNullable<SemanticEntity['columns']>[number]
+
+/**
+ * Merge the base's column annotations with the child's, per column and per
+ * field: a child redeclaring `status` only to add a label keeps the base's
+ * `values` domain, and base columns the child never mentions carry over.
+ */
+function mergeColumns(base: SemanticColumn[] | undefined, child: SemanticColumn[] | undefined): SemanticColumn[] | undefined {
+  if (base === undefined) return child
+  if (child === undefined) return base
+  const childByName = new Map(child.map((column) => [column.name, column]))
+  const merged = base.map((column) => {
+    const override = childByName.get(column.name)
+    return override === undefined ? column : { ...column, ...override }
+  })
+  const baseNames = new Set(base.map((column) => column.name))
+  for (const column of child) {
+    if (!baseNames.has(column.name)) merged.push(column)
+  }
+  return merged
+}
+
+/** Child's relationship to a target entity replaces the base's (predictable join paths). */
+function mergeRelationships(
+  base: SemanticEntity['relationships'],
+  child: SemanticEntity['relationships'],
+): SemanticEntity['relationships'] {
+  if (base === undefined) return child
+  if (child === undefined) return base
+  const childTargets = new Set(child.map((rel) => rel.entity))
+  return [...base.filter((rel) => !childTargets.has(rel.entity)), ...child]
+}
+
+/** Row-level security predicates accumulate (AND) — a child cannot drop the base's. */
+function joinPredicates(base: string | undefined, child: string | undefined): string | undefined {
+  if (base === undefined) return child
+  if (child === undefined) return base
+  return base === child ? base : `(${base}) AND (${child})`
+}
+
 function duplicateIssue(kind: keyof typeof COLLECTIONS, key: string, loserFile: string, winnerFile: string): LintIssue {
   return {
     severity: 'warning',
@@ -353,6 +423,60 @@ export function composeSemantic(fragments: readonly LoadedFragment[]): ComposeRe
     }
   }
 
+  // --- entity extends resolution -------------------------------------------
+  // Resolved BEFORE the metric pass: metrics consult the entity's effective
+  // timeField/dimensions/filters/relationships, and inherited relationships
+  // participate in join reachability. Chain semantics mirror the metric axis:
+  // scalars override (nearest wins), `filters` and `rowFilter` accumulate
+  // (constraints cannot be dropped), columns merge per column/field, the
+  // child's relationship to a target replaces the base's. `extends` itself is
+  // resolved away.
+  const resolvedEntities = new Map<string, { entity: SemanticEntity, file: string }>()
+  const resolveEntity = (name: string): SemanticEntity => {
+    const cached = resolvedEntities.get(name)
+    if (cached !== undefined) return cached.entity
+    const seen: string[] = []
+    const chain: SemanticEntity[] = []
+    let current = entities.get(name)
+    while (current !== undefined) {
+      const entity = current.entity
+      if (seen.includes(entity.table)) {
+        throw new SemanticConfigError(`实体继承链成环: ${[...seen, entity.table].join(' → ')}`)
+      }
+      seen.push(entity.table)
+      chain.unshift(entity)
+      if (entity.extends === undefined) break
+      current = entities.get(entity.extends)
+      if (current === undefined) {
+        throw new SemanticConfigError(
+          `entities["${name}"] (${entities.get(name)!.file}): extends "${entity.extends}" 未定义。已定义实体: ${[...entities.keys()].join(', ') || '(无)'}`,
+        )
+      }
+    }
+    let merged: SemanticEntity = { ...chain[0]! }
+    for (const entity of chain.slice(1)) {
+      const filters = entity.filters !== undefined || merged.filters !== undefined
+        ? [...new Set([...(merged.filters ?? []), ...(entity.filters ?? [])])]
+        : undefined
+      merged = {
+        ...merged,
+        ...entity,
+        ...(filters !== undefined ? { filters } : {}),
+        ...(mergeColumns(merged.columns, entity.columns) !== undefined ? { columns: mergeColumns(merged.columns, entity.columns) } : {}),
+        ...(mergeRelationships(merged.relationships, entity.relationships) !== undefined
+          ? { relationships: mergeRelationships(merged.relationships, entity.relationships) }
+          : {}),
+        ...(joinPredicates(merged.rowFilter, entity.rowFilter) !== undefined
+          ? { rowFilter: joinPredicates(merged.rowFilter, entity.rowFilter) }
+          : {}),
+      }
+    }
+    const { extends: _dropped, ...resolved } = merged
+    resolvedEntities.set(name, { entity: resolved, file: entities.get(name)!.file })
+    return resolved
+  }
+  for (const name of entities.keys()) resolveEntity(name)
+
   // --- extends resolution -------------------------------------------------
   const chainOf = (name: string): RawMetric[] => {
     const chain: RawMetric[] = []
@@ -387,7 +511,7 @@ export function composeSemantic(fragments: readonly LoadedFragment[]): ComposeRe
     if (entityName === undefined) {
       throw new SemanticConfigError(`metrics["${name}"] (${entry.file}): 缺少 entity,且继承链上没有定义 entity 的基础指标`)
     }
-    const entity = entities.get(entityName)
+    const entity = resolvedEntities.get(entityName)
     if (entity === undefined) {
       throw new SemanticConfigError(
         `metrics["${name}"] (${entry.file}): entity "${entityName}" 未在 entities 中定义。已定义: ${[...entities.keys()].join(', ') || '(无)'}`,
@@ -418,7 +542,7 @@ export function composeSemantic(fragments: readonly LoadedFragment[]): ComposeRe
     // joins must be reachable from this entity via relationships (BFS, depth ≤ 3).
     const joins = pick(chain, 'joins')
     if (joins !== undefined && joins.length > 0) {
-      const reachable = reachableEntities(entityName, entities)
+      const reachable = reachableEntities(entityName, resolvedEntities)
       for (const join of joins) {
         if (!reachable.has(join)) {
           throw new SemanticConfigError(`metrics["${name}"] (${entry.file}): joins 包含不可达实体 "${join}"（需通过 entities 的 relationships 串联,当前实体 "${entityName}" 仅能到达: ${[...reachable].join('/') || '(无)'})`)
@@ -463,10 +587,10 @@ export function composeSemantic(fragments: readonly LoadedFragment[]): ComposeRe
   for (const [table, entry] of entities) origins[`entity:${table}`] = entry.file
   for (const [termName, entry] of terms) origins[`term:${termName}`] = entry.file
 
-  // --- relationship / RLS structural validation (one pass over entities) ---
-  for (const [table, entry] of entities) {
+  // --- relationship / key / RLS structural validation (one pass over entities) ---
+  for (const [table, entry] of resolvedEntities) {
     for (const rel of entry.entity.relationships ?? []) {
-      if (!entities.has(rel.entity)) {
+      if (!resolvedEntities.has(rel.entity)) {
         throw new SemanticConfigError(`entities["${table}"] (${entry.file}): relationship 指向未定义实体 "${rel.entity}"`)
       }
     }
@@ -474,7 +598,7 @@ export function composeSemantic(fragments: readonly LoadedFragment[]): ComposeRe
 
   const config: SemanticConfig = {
     ...(Object.keys(defaults).length > 0 ? { defaults } : {}),
-    entities: [...entities.values()].map((entry) => entry.entity),
+    entities: [...resolvedEntities.values()].map((entry) => entry.entity),
     terms: [...terms.values()].map((entry) => entry.term),
     metrics: resolvedMetrics,
   }

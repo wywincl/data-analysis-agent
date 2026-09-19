@@ -58,18 +58,39 @@ export interface SemanticInherited {
 /** Root-level defaults, inherited by every entity and metric. */
 export interface SemanticDefaults extends SemanticInherited {}
 
-/** A foreign key from this entity to a related entity, enabling cross-table metrics. */
+/**
+ * A foreign key from this entity to a related entity, enabling cross-table metrics.
+ *
+ * Ontology-wise this is the layer's object property: a named, directed
+ * association between two concepts with a concrete join path.
+ */
 export interface SemanticRelationship {
   /** Related entity (table) name; must resolve to a defined `entities` entry. */
   entity: string
   /** `[thisColumn, relatedColumn]` — the join condition (both validated identifiers). */
   on: [string, string]
+  /** Human-readable relation name, e.g. 下单用户 — shown in the catalog/preview. */
+  name?: string
+  /** How many targets one row of this entity relates to. Default `many-to-one`. */
+  cardinality?: 'many-to-one' | 'one-to-many' | 'one-to-one'
 }
+
+/** One allowed value of an enum-style column: plain value or value + label. */
+export type SemanticColumnValue = string | { value: string; label?: string }
 
 /** MEANING: one physical table plus its business labels. */
 export interface SemanticEntity extends SemanticInherited {
   /** Physical table name (validated identifier). */
   table: string
+  /**
+   * Inherit from another entity by table name. The base contributes its
+   * metadata, columns (per-field merge, child wins per column), relationships
+   * (child replaces per target entity), dimensions/timeField/filters (filters
+   * accumulate) and `key`; resolved away during composition.
+   */
+  extends?: string
+  /** Primary key column — identity semantics surfaced in the catalog. */
+  key?: string
   /** Business name, e.g. 订单表. */
   label?: string
   /** One-paragraph business description shown to the model. */
@@ -82,6 +103,12 @@ export interface SemanticEntity extends SemanticInherited {
     unit?: string
     /** Mark PII/sensitive columns — masked in results unless the role may read them. */
     sensitive?: boolean
+    /**
+     * Declared value domain for enum-style columns (e.g. status). Surfaced via
+     * inspect_schema/list_semantic so the model sees the valid values; lint
+     * warns when a metric filter compares against an undeclared value.
+     */
+    values?: readonly SemanticColumnValue[]
   }[]
   /** Foreign keys to other entities; lets a metric join across tables. */
   relationships?: SemanticRelationship[]
@@ -193,6 +220,8 @@ export type LintCode =
   | 'relationship-column-missing'
   | 'unknown-join-entity'
   | 'join-unreachable'
+  | 'unknown-key-column'
+  | 'enum-filter-value-unknown'
   | 'ratio-missing-sides'
   | 'ratio-unknown-metric'
   | 'expression-missing'
@@ -247,7 +276,7 @@ export interface SemanticSummary {
   state: SemanticSummaryState
   counts: { entities: number, metrics: number, terms: number }
   metrics: SemanticSummaryMetric[]
-  entities: { table: string, label?: string }[]
+  entities: SemanticSummaryEntity[]
   terms: { name: string, description: string }[]
   /** Lint findings, already rendered in the operator's locale. */
   issues: LintIssueView[]
@@ -257,4 +286,15 @@ export interface SemanticSummary {
   file?: string
   /** Last load error, if the graph failed to load. */
   error?: string
+}
+
+/** One entity as shown in the workbench preview. */
+export interface SemanticSummaryEntity {
+  table: string
+  label?: string
+  description?: string
+  /** Declared primary key column. */
+  key?: string
+  /** Declared relationships, as shown on the preview card. */
+  relationships?: SemanticRelationship[]
 }

@@ -53,6 +53,9 @@ export function chartFromResultMeta(meta: unknown): RdChartEvent | undefined {
   const chart = (meta as { rdChart?: unknown }).rdChart
   if (chart === null || typeof chart !== 'object') return undefined
   const candidate = chart as Partial<RdChartEvent>
-  if (typeof candidate.chartId !== 'string' || typeof candidate.echartsOption !== 'object') return undefined
+  if (typeof candidate.chartId !== 'string' || typeof candidate.echartsOption !== 'object' || Array.isArray(candidate.echartsOption)) return undefined
+  // columns/data feed CSV export and cross-filtering — a payload missing them
+  // must not pass (it would crash /data-csv on `[...event.columns]`).
+  if (!Array.isArray(candidate.columns) || !Array.isArray(candidate.data)) return undefined
   return candidate as RdChartEvent
 }

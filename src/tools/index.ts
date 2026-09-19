@@ -17,6 +17,7 @@ import { limitsFor, type Config } from '../config.ts'
 import type { DataSourceRegistry } from '../registry.ts'
 import type { DataSourceProvider, RdChartType, RdChartTypeInput, RdSeriesInput } from '../types.ts'
 import type { SemanticLayer } from '../semantic/layer.ts'
+import type { SemanticColumnValue, SemanticRelationship } from '../semantic/types.ts'
 import type { JobStore } from '../jobs.ts'
 import type { QueryAuditStore } from '../audit.ts'
 import { guardSelectOnly, GuardError } from '../sql/guard.ts'
@@ -25,6 +26,17 @@ import { correlation, distribution, insight, profile, topn, type AnalysisContext
 import { textTable } from './text.ts'
 import { zh, en } from '../i18n/host.ts'
 import { tpl } from '../i18n/index.ts'
+
+/** Semantic annotation attached to one introspected column (inspect overlay). */
+interface ColumnMeta {
+  name: string
+  label?: string
+  description?: string
+  unit?: string
+  values?: readonly SemanticColumnValue[]
+  isKey?: boolean
+  relationship?: SemanticRelationship
+}
 
 /** Lossless object schema for every canonical tool result (official pattern). */
 function objectSchema() {
@@ -46,8 +58,6 @@ function s(config: Config, key: keyof typeof zh): string {
 
 /** Register every tool; returns nothing (registrations are effects on ctx). */
 export function registerTools(ctx: Context, config: Config, registry: DataSourceRegistry, semantic: SemanticLayer, jobs: JobStore, audit: QueryAuditStore): void {
-  const { modelRowCap } = config
-
   /** Time a provider query and land it in the audit log (cost metering). */
   async function auditedQuery(
     kind: import('../audit.ts').AuditKind,
@@ -55,6 +65,7 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
     sql: string,
     options: { timeoutMs: number, maxRows: number, signal?: AbortSignal },
     meta: Record<string, string> = {},
+    tablesTouched?: readonly string[],
   ): Promise<import('../types.ts').QueryResult> {
     const started = Date.now()
     try {
@@ -63,7 +74,7 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
         kind,
         datasource: provider.name,
         sql,
-        tablesTouched: undefined,
+        tablesTouched,
         rowCount: result.rowCount,
         durationMs: Date.now() - started,
         truncated: result.truncated,
@@ -76,6 +87,7 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
         kind,
         datasource: provider.name,
         sql,
+        tablesTouched,
         durationMs: Date.now() - started,
         role: config.currentRole,
         error: error instanceof Error ? error.message : String(error),
@@ -143,12 +155,34 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
         signal: undefined,
       })
       // 语义层标注叠加:表/列的业务含义来自 semantic.yaml(meaning 层)。
-      const annotate = (table: string): { tableLabel?: string, tableDescription?: string, columnMeta: Map<string, { label?: string, description?: string, unit?: string }> } => {
+      // Column strings carry the ontology-facing facts the model needs at the
+      // exact column: business label, description, unit, PK, declared enum
+      // values, and the relationship the column anchors.
+      const annotate = (table: string): {
+        tableLabel?: string
+        tableDescription?: string
+        columnMeta: Map<string, ColumnMeta>
+      } => {
         const entity = semantic.entityFor(table)
-        if (entity === undefined) return { columnMeta: new Map() }
-        const columnMeta = new Map<string, { label?: string, description?: string, unit?: string }>()
-        for (const column of entity.columns ?? []) columnMeta.set(column.name, column)
+        const columnMeta = new Map<string, ColumnMeta>()
+        if (entity === undefined) return { columnMeta }
+        for (const column of entity.columns ?? []) columnMeta.set(column.name, { ...column })
+        for (const relationship of entity.relationships ?? []) {
+          const existing = columnMeta.get(relationship.on[0]) ?? { name: relationship.on[0] }
+          columnMeta.set(relationship.on[0], { ...existing, relationship })
+        }
+        if (entity.key !== undefined) {
+          const existing = columnMeta.get(entity.key) ?? { name: entity.key }
+          columnMeta.set(entity.key, { ...existing, isKey: true })
+        }
         return { ...(entity.label !== undefined ? { tableLabel: entity.label } : {}), ...(entity.description !== undefined ? { tableDescription: entity.description } : {}), columnMeta }
+      }
+      const renderColumn = (column: { name: string, dataType: string, comment?: string }, meta: ColumnMeta | undefined, notNull: boolean): string => {
+        const enumSegment = meta?.values !== undefined && meta.values.length > 0
+          ? ` {${meta.values.map((entry) => (typeof entry === 'string' ? entry : entry.label !== undefined ? `${entry.value}=${entry.label}` : entry.value)).join('|')}}`
+          : ''
+        const relationshipSegment = meta?.relationship !== undefined ? ` →${meta.relationship.entity}.${meta.relationship.on[1]}` : ''
+        return `${column.name} ${column.dataType}${notNull ? ' NOT NULL' : ''}${meta?.label !== undefined ? ` -- ${meta.label}` : column.comment ? ` -- ${column.comment}` : ''}${meta?.description !== undefined ? ` (${meta.description})` : ''}${meta?.unit !== undefined ? ` [${meta.unit}]` : ''}${meta?.isKey === true ? ' PK' : ''}${enumSegment}${relationshipSegment}`
       }
       if (args.table !== undefined) {
         const table = schema.tables.find((entry) => entry.name.toLowerCase() === args.table!.toLowerCase())
@@ -167,10 +201,7 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
             ...(tableLabel !== undefined ? { label: tableLabel } : {}),
             ...(tableDescription !== undefined ? { description: tableDescription } : {}),
             ...(table.rowCountEstimate !== undefined ? { rowCountEstimate: table.rowCountEstimate } : {}),
-            columns: table.columns.map((column) => {
-              const meta = columnMeta.get(column.name)
-              return `${column.name} ${column.dataType}${column.nullable === false ? ' NOT NULL' : ''}${meta?.label !== undefined ? ` -- ${meta.label}` : column.comment ? ` -- ${column.comment}` : ''}${meta?.description !== undefined ? ` (${meta.description})` : ''}${meta?.unit !== undefined ? ` [${meta.unit}]` : ''}`
-            }).join(', '),
+            columns: table.columns.map((column) => renderColumn(column, columnMeta.get(column.name), column.nullable === false)).join(', '),
           }],
           ...(table.samples !== undefined && table.samples.length > 0 ? { sample: table.samples } : {}),
         } as unknown as Record<string, JsonValue>
@@ -190,10 +221,7 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
             ...(tableDescription !== undefined ? { description: tableDescription } : {}),
             ...(table.rowCountEstimate !== undefined ? { rowCountEstimate: table.rowCountEstimate } : {}),
             ...(table.comment !== undefined && tableLabel === undefined ? { comment: table.comment } : {}),
-            columns: table.columns.map((column) => {
-              const meta = columnMeta.get(column.name)
-              return `${column.name} ${column.dataType}${meta?.label !== undefined ? ` -- ${meta.label}` : column.comment ? ` -- ${column.comment}` : ''}${meta?.description !== undefined ? ` (${meta.description})` : ''}`
-            }).join(', '),
+            columns: table.columns.map((column) => renderColumn(column, columnMeta.get(column.name), column.nullable === false)).join(', '),
           }
         }),
       } as unknown as Record<string, JsonValue>
@@ -242,7 +270,7 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
         timeoutMs,
         maxRows,
         signal: exec.signal,
-      }, { reason: args.reason })
+      }, { reason: args.reason }, guarded.tables)
       const resultId = crypto.randomUUID()
       registry.putResult({
         resultId,
@@ -261,9 +289,9 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
         tablesTouched: guarded.tables,
         reason: args.reason,
         columns: result.columns,
-        rows: result.rows.slice(0, modelRowCap),
+        rows: result.rows.slice(0, config.modelRowCap),
         rowCount: result.rowCount,
-        modelRowsShown: Math.min(result.rows.length, modelRowCap),
+        modelRowsShown: Math.min(result.rows.length, config.modelRowCap),
         truncated: result.truncated,
       } as unknown as Record<string, JsonValue>
     },
@@ -326,7 +354,7 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
           timeoutMs: configured?.timeoutMs ?? config.defaultTimeoutMs,
           maxRows: config.chartDataCap,
           signal: exec.signal,
-        }, { reason: `render_chart: ${args.title}` })
+        }, { reason: `render_chart: ${args.title}` }, guarded.tables)
         rows = result.rows as readonly Record<string, JsonValue>[]
         columns = result.columns.map((col) => ({ ...col }))
         sql = guarded.sql
@@ -425,13 +453,18 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
       const configured = config.dataSources.find((ds) => ds.name === args.datasource)
       const { timeoutMs } = limitsFor(config, configured)
       const guarded = guardSelectOnly(args.sql, provider.dialect, limitsFor(config, configured).maxRows)
+      // Derived statements execute unguarded at the provider seam — run them
+      // through the same read-only gate (row cap 20k mirrors ctx.run below).
       const ctx: AnalysisContext = {
         dialect: provider.dialect,
-        run: (sql) => auditedQuery('analyze', provider, sql, {
-          timeoutMs,
-          maxRows: 20_000,
-          signal: exec.signal,
-        }, { analysis: args.analysis }),
+        run: (sql) => {
+          const derived = guardSelectOnly(sql, provider.dialect, 20_000)
+          return auditedQuery('analyze', provider, derived.sql, {
+            timeoutMs,
+            maxRows: 20_000,
+            signal: exec.signal,
+          }, { analysis: args.analysis }, derived.tables)
+        },
       }
       const kind = args.analysis as AnalysisKind
       let result: Record<string, unknown>
@@ -474,8 +507,9 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
   // ── Async long-query jobs (③ datasources roadmap) ─────────────────────────
   // run_query_async → get_query_job → get_result_rows. Long / large queries
   // run in the background and are paged back, so a heavy Spark/warehouse scan
-  // never blocks (or overflows) a single model turn. Async jobs deliberately
-  // skip the interactive approval gate — the read-only guard still applies.
+  // never blocks (or overflows) a single model turn. The approval gate covers
+  // the job at submission time (same ask/auto policy as run_sql); the
+  // read-only guard applies to the statement before it is queued.
 
   ctx.tools.register(defineTool({
     name: 'run_query_async',
@@ -509,7 +543,7 @@ export function registerTools(ctx: Context, config: Config, registry: DataSource
       const maxRows = Math.min(Math.max(args.maxRows ?? sourceMaxRows, 1), 50_000)
       const guarded = guardSelectOnly(args.sql, provider.dialect, maxRows)
       const jobId = crypto.randomUUID()
-      const job = jobs.start(jobId, provider, guarded.sql, { timeoutMs, maxRows }, guarded.tables)
+      const job = jobs.start(jobId, provider, guarded.sql, { timeoutMs, maxRows }, guarded.tables, { reason: args.reason, role: config.currentRole })
       return {
         jobId: job.jobId,
         datasource: job.datasource,

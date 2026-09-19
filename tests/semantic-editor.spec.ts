@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parse } from 'yaml'
 import { scaffoldFromIntrospection } from '../src/semantic/scaffold.ts'
-import { configToYaml, ensureWorkbenchInclude, workbenchPathFor } from '../src/semantic/serialize.ts'
+import { configToYaml, ensureWorkbenchInclude, workbenchPathFor, writeSemanticFile } from '../src/semantic/serialize.ts'
 import { buildSemanticSummary } from '../src/semantic/summary.ts'
 import { SemanticLayer } from '../src/semantic/layer.ts'
 import type { SchemaInfo } from '../src/types.ts'
@@ -36,17 +36,56 @@ describe('scaffoldFromIntrospection', () => {
     const result = scaffoldFromIntrospection(schema, 'demo')
     expect(result.entities).toHaveLength(1)
     expect(result.entities[0].table).toBe('orders')
-    expect(result.metrics.some((m) => m.name === 'orders_count' && m.agg === 'count')).toBe(true)
+    const count = result.metrics.find((m) => m.name === 'orders_count')
+    expect(count?.agg).toBe('count')
+    // entity timeField propagates to its metrics, keeping unbounded-metric away
+    expect(count?.timeField).toBe('created_at')
     expect(result.metrics.some((m) => m.name === 'v_recent_count')).toBe(false)
   })
 
   it('derives sum/avg metrics for numeric columns and a time field', () => {
     const result = scaffoldFromIntrospection(schema, 'demo')
-    expect(result.metrics.some((m) => m.name === 'orders_amount_sum' && m.agg === 'sum')).toBe(true)
-    expect(result.metrics.some((m) => m.name === 'orders_amount_avg' && m.agg === 'avg')).toBe(true)
+    const sum = result.metrics.find((m) => m.name === 'orders_amount_sum' && m.agg === 'sum')
+    const avg = result.metrics.find((m) => m.name === 'orders_amount_avg' && m.agg === 'avg')
+    expect(sum?.measure).toBe('amount')
+    expect(sum?.timeField).toBe('created_at')
+    expect(avg?.measure).toBe('amount')
+    expect(avg?.timeField).toBe('created_at')
     // user_id is numeric but looks like a surrogate key → skipped
     expect(result.metrics.some((m) => m.name === 'orders_user_id_sum')).toBe(false)
     expect(result.entities[0].timeField).toBe('created_at')
+  })
+
+  it('treats TEXT date columns as temporal by name (SQLite demo case)', () => {
+    const textDates: SchemaInfo = {
+      datasource: 'demo',
+      dialect: 'sqlite',
+      truncated: false,
+      tables: [
+        {
+          name: 'daily_revenue',
+          type: 'table',
+          columns: [
+            { name: 'dt', dataType: 'TEXT' },
+            { name: 'revenue', dataType: 'REAL' },
+          ],
+        },
+        {
+          name: 'users',
+          type: 'table',
+          columns: [
+            { name: 'id', dataType: 'INTEGER' },
+            { name: 'name', dataType: 'TEXT' },
+            { name: 'signup_date', dataType: 'TEXT' },
+          ],
+        },
+      ],
+    }
+    const result = scaffoldFromIntrospection(textDates, 'demo')
+    expect(result.entities.find((e) => e.table === 'daily_revenue')?.timeField).toBe('dt')
+    expect(result.metrics.find((m) => m.name === 'daily_revenue_revenue_sum')?.timeField).toBe('dt')
+    expect(result.entities.find((e) => e.table === 'users')?.timeField).toBe('signup_date')
+    expect(result.metrics.find((m) => m.name === 'users_count')?.timeField).toBe('signup_date')
   })
 })
 
@@ -81,6 +120,16 @@ describe('serialize', () => {
   it('workbenchPathFor derives a sidecar name', () => {
     expect(workbenchPathFor('/x/semantic.yaml', '/cwd')).toBe('/x/semantic.workbench.yaml')
     expect(workbenchPathFor('', '/cwd')).toBe(join('/cwd', 'semantic.workbench.yaml'))
+  })
+
+  it('writeSemanticFile overwrites atomically and leaves no temp files', () => {
+    const dir = tmp()
+    const file = join(dir, 'semantic.workbench.yaml')
+    writeSemanticFile(file, 'entities:\n  - table: a\n')
+    writeSemanticFile(file, 'metrics:\n  - name: m\n')
+    expect(readFileSync(file, 'utf8')).toBe('metrics:\n  - name: m\n')
+    const leftovers = readdirSync(dir).filter((f) => f.endsWith('.tmp'))
+    expect(leftovers).toEqual([])
   })
 })
 
@@ -121,5 +170,57 @@ describe('buildSemanticSummary', () => {
     const layer = new SemanticLayer(undefined)
     const summary = buildSemanticSummary(layer, 'zh')
     expect(summary.state).toBe('empty')
+  })
+})
+
+describe('scaffold: 命名约定推断 relationships + key', () => {
+  const schema: SchemaInfo = {
+    datasource: 'demo',
+    dialect: 'sqlite',
+    truncated: false,
+    tables: [
+      {
+        name: 'users',
+        type: 'table',
+        columns: [
+          { name: 'id', dataType: 'INTEGER' },
+          { name: 'name', dataType: 'TEXT' },
+        ],
+      },
+      {
+        name: 'orders',
+        type: 'table',
+        columns: [
+          { name: 'id', dataType: 'INTEGER' },
+          { name: 'user_id', dataType: 'INTEGER' },
+          { name: 'amount', dataType: 'DECIMAL' },
+        ],
+      },
+    ],
+  }
+
+  it('X_id 列推断出 many-to-one 关系,id 列成为主键', () => {
+    const result = scaffoldFromIntrospection(schema, 'demo')
+    const orders = result.entities.find((entity) => entity.table === 'orders')
+    expect(orders?.key).toBe('id')
+    expect(orders?.relationships).toEqual([
+      { entity: 'users', on: ['user_id', 'id'], cardinality: 'many-to-one' },
+    ])
+  })
+
+  it('目标实体不存在或目标没有可 join 的主键列时不推断', () => {
+    const loose: SchemaInfo = {
+      datasource: 'demo',
+      dialect: 'sqlite',
+      truncated: false,
+      tables: [
+        { name: 'events', type: 'table', columns: [{ name: 'actor_id', dataType: 'INTEGER' }] },
+        { name: 'actors', type: 'table', columns: [{ name: 'code', dataType: 'TEXT' }] },
+      ],
+    }
+    const result = scaffoldFromIntrospection(loose, 'demo')
+    const events = result.entities.find((entity) => entity.table === 'events')
+    expect(events?.relationships).toBeUndefined()
+    expect(events?.key).toBeUndefined()
   })
 })

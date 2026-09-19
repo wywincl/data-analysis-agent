@@ -14,17 +14,21 @@
  * `config` dependency, and switching the UI language re-labels existing issues
  * without reloading the semantic layer.
  *
- * Deliberately NOT checked: the contents of `filters`. They are free-form SQL
- * predicates by design (trusted, operator-authored, `status = 'paid'` up to
- * `dt >= date_sub(now(), interval 7 day)`), and guessing column names out of
- * them with a regex would produce more false positives than real catches.
+ * Deliberately NOT checked: the contents of `filters` in general. They are
+ * free-form SQL predicates by design (trusted, operator-authored,
+ * `status = 'paid'` up to `dt >= date_sub(now(), interval 7 day)`), and
+ * guessing column names out of them with a regex would produce more false
+ * positives than real catches. The one narrow exception is the declared
+ * enum domain: when a column carries `values`, an `= 'x'` / `IN (…)`
+ * comparison against it is checked against that domain — the config
+ * explicitly promised those values, so the check is precise, not a guess.
  *
  * @module dsh-data-analysis/semantic/lint
  */
 
 import { tpl } from '../i18n/index.ts'
 import { en, zh, type HostLocale } from '../i18n/host.ts'
-import type { LintIssue, LintIssueView, SemanticConfig, SemanticEntity } from './types.ts'
+import type { LintIssue, LintIssueView, SemanticConfig, SemanticEntity, SemanticMetric } from './types.ts'
 
 /** Provenance map from compose.ts: `metric:<name>` / `entity:<table>` / `term:<name>` → file. */
 type Origins = Readonly<Record<string, string>>
@@ -63,12 +67,6 @@ function columnNames(entity: SemanticEntity | undefined): ReadonlySet<string> | 
   return new Set(entity.columns.map((column) => column.name.toLowerCase()))
 }
 
-/** Report each element of `items` that is missing from `known` (case-insensitive). */
-function missing(known: ReadonlySet<string> | undefined, items: readonly string[] | undefined): string[] {
-  if (known === undefined || items === undefined) return []
-  return items.filter((item) => !known.has(item.toLowerCase()))
-}
-
 /** Quote a list of identifiers for interpolation into a message. */
 function quoteList(items: readonly string[]): string {
   return items.map((item) => `"${item}"`).join(', ')
@@ -92,11 +90,36 @@ export function lintSemanticConfig(config: SemanticConfig, origins: Origins = {}
   }
 
   // --- per-metric column checks -------------------------------------------
+  // Enum domains per entity: column name → declared values (string form).
+  const enumOf = new Map<string, ReadonlyMap<string, string>>()
+  for (const entity of config.entities ?? []) {
+    const declared = (entity.columns ?? []).filter((column) => column.values !== undefined)
+    if (declared.length === 0) continue
+    const domains = new Map<string, string>()
+    for (const column of declared) {
+      const values = (column.values ?? []).map((entry) => (typeof entry === 'string' ? entry : entry.value))
+      domains.set(column.name.toLowerCase(), values.join('|'))
+    }
+    enumOf.set(entity.table, domains)
+  }
+
+  /**
+   * Column references may be qualified (`users.city`) when the metric joins
+   * that entity — resolve against the named entity instead of the metric's own.
+   */
+  const columnExists = (metric: SemanticMetric, ref: string): boolean => {
+    const dot = ref.indexOf('.')
+    const target = dot === -1 ? metric.entity : ref.slice(0, dot)
+    const column = dot === -1 ? ref : ref.slice(dot + 1)
+    return columnsOf.get(target)?.has(column.toLowerCase()) ?? false
+  }
+
   for (const metric of metrics) {
     const known = columnsOf.get(metric.entity)
     const where = at(origins, `metric:${metric.name}`, `metrics["${metric.name}"]`)
+    const enums = enumOf.get(metric.entity)
 
-    const badDimensions = missing(known, metric.dimensions)
+    const badDimensions = (metric.dimensions ?? []).filter((ref) => !columnExists(metric, ref))
     if (badDimensions.length > 0) {
       add('unknown-dimension-column', `${where}.dimensions`, { names: quoteList(badDimensions), entity: metric.entity })
     }
@@ -106,7 +129,7 @@ export function lintSemanticConfig(config: SemanticConfig, origins: Origins = {}
       add('duplicate-dimension', `${where}.dimensions`, { names: quoteList([...new Set(duplicates)]) })
     }
 
-    if (metric.measure !== undefined && known !== undefined && !known.has(metric.measure.toLowerCase())) {
+    if (metric.measure !== undefined && known !== undefined && !columnExists(metric, metric.measure)) {
       add('unknown-measure-column', `${where}.measure`, { column: metric.measure, entity: metric.entity })
     }
 
@@ -120,6 +143,51 @@ export function lintSemanticConfig(config: SemanticConfig, origins: Origins = {}
 
     if (metric.timeField === undefined && (metric.filters ?? []).length === 0) {
       add('unbounded-metric', where, {})
+    }
+
+    // Declared enum domains: check simple `col = 'v'` / `col IN ('a','b')`
+    // comparisons inside this metric's filters. Unqualified columns only —
+    // `Entity.column` qualified references are out of reach of this cheap
+    // check by design.
+    if (enums !== undefined) {
+      const reported = new Set<string>()
+      for (const predicate of metric.filters ?? []) {
+        // Split on the AND/OR connectors so each comparison is judged alone.
+        const fragments = predicate.split(/\s+(?:and|or)\s+/i)
+        for (const fragment of fragments) {
+          for (const [column, domain] of enums) {
+            const escaped = column.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            if (!new RegExp(`^\\s*${escaped}\\s*(?:=|in\\s*\\()`, 'i').test(fragment)) continue
+            const domainValues = domain.split('|')
+            for (const match of fragment.matchAll(/['"]([a-z0-9_-]+)['"]/gi)) {
+              const value = match[1]!
+              if (domainValues.includes(value)) continue
+              const key = `${column}:${value}`
+              if (reported.has(key)) continue
+              reported.add(key)
+              add('enum-filter-value-unknown', `${where}.filters`, {
+                column, value, entity: metric.entity, values: domain,
+              })
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // --- per-entity structural checks ----------------------------------------
+  for (const entity of config.entities ?? []) {
+    const known = columnsOf.get(entity.table)
+    const where = at(origins, `entity:${entity.table}`, `entities["${entity.table}"]`)
+    if (entity.key !== undefined && known !== undefined && !known.has(entity.key.toLowerCase())) {
+      add('unknown-key-column', `${where}.key`, { column: entity.key, entity: entity.table })
+    }
+    for (const relationship of entity.relationships ?? []) {
+      if (known !== undefined && !known.has(relationship.on[0].toLowerCase())) {
+        add('relationship-column-missing', `${where}.relationships`, {
+          entity: entity.table, column: relationship.on[0], target: relationship.entity,
+        })
+      }
     }
   }
 

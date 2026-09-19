@@ -13,9 +13,22 @@ describe('guardSelectOnly — accepts', () => {
     expect(result.sql.startsWith('SELECT')).toBe(true)
   })
 
-  it('SELECT with existing LIMIT (kept, not doubled)', () => {
+  it('SELECT with existing LIMIT (kept when within the cap)', () => {
     const result = ok('SELECT * FROM orders LIMIT 5')
     expect(result.sql).toBe('SELECT * FROM orders LIMIT 5')
+  })
+
+  it('clamps an existing LIMIT above the row cap (server work is bounded)', () => {
+    expect(guardSelectOnly('SELECT * FROM orders LIMIT 99999999', 'sqlite', 100).sql).toBe('SELECT * FROM orders LIMIT 100')
+    expect(guardSelectOnly('SELECT * FROM orders LIMIT 10 OFFSET 50', 'sqlite', 100).sql).toBe('SELECT * FROM orders LIMIT 10 OFFSET 50')
+    expect(guardSelectOnly('SELECT * FROM orders LIMIT 1000 OFFSET 50', 'sqlite', 100).sql).toBe('SELECT * FROM orders LIMIT 100 OFFSET 50')
+    // MySQL offset-first form keeps the offset, clamps the count.
+    expect(guardSelectOnly('SELECT * FROM orders LIMIT 50, 1000', 'mysql', 100).sql).toBe('SELECT * FROM orders LIMIT 50, 100')
+  })
+
+  it('non-finite maxRows degrades to a 1-row cap instead of LIMIT NaN', () => {
+    const result = guardSelectOnly('SELECT * FROM orders', 'sqlite', Number.NaN)
+    expect(result.sql).toBe('SELECT * FROM orders LIMIT 1')
   })
 
   it('WITH … SELECT (CTE)', () => {
@@ -32,6 +45,10 @@ describe('guardSelectOnly — accepts', () => {
     expect(() => ok('SELECT city, COUNT(*) AS c FROM users GROUP BY city ORDER BY c DESC')).not.toThrow()
     expect(() => ok('SELECT u.city, SUM(o.amount) FROM orders o JOIN users u ON u.id = o.user_id GROUP BY u.city', 'mysql')).not.toThrow()
     expect(() => ok('SELECT id FROM orders LIMIT 5 OFFSET 10', 'postgresql')).not.toThrow()
+  })
+
+  it('a -- inside a string literal does not defeat the parser (original text is parsed)', () => {
+    expect(() => ok("SELECT * FROM orders WHERE note = 'a--b'")).not.toThrow()
   })
 })
 
@@ -55,6 +72,12 @@ describe('guardSelectOnly — rejects', () => {
   it('locking / INTO / OUTFILE constructs even when parseable', () => {
     reject('SELECT * FROM orders FOR UPDATE', 'postgresql')
     reject("SELECT * FROM orders INTO OUTFILE '/tmp/x'", 'mysql')
+  })
+
+  it('rejects dangerous constructs hidden behind SQL comments', () => {
+    reject("SELECT * FROM orders INTO/*x*/OUTFILE '/tmp/f'", 'mysql')
+    reject('SELECT * FROM orders FOR/*x*/UPDATE', 'postgresql')
+    reject("SELECT * FROM orders INTO OUTFILE '/tmp/f' -- tail comment", 'mysql')
   })
 
   it('unparseable SQL (fail closed)', () => {

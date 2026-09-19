@@ -119,7 +119,7 @@ export function createSparkMockProvider(name: string, delayMs = 1200): DataSourc
         truncated: false,
       }
     },
-    async introspect(_options: { readonly includeSamples?: boolean, readonly signal?: AbortSignal }): Promise<SchemaInfo> {
+    async introspect(_options: { readonly includeSamples?: boolean, readonly signal?: AbortSignal } = {}): Promise<SchemaInfo> {
       await sleep(200)
       return { ...MOCK_SCHEMA, datasource: name }
     },

@@ -39,6 +39,9 @@ export function downloadChartHtml(event: RdChartEvent, locale: ClientLocale = 'z
       echartsOption: event.echartsOption,
       data: event.data,
       columns: [...event.columns],
+      // Field metadata drives the exported page's cross-filtering; without it
+      // the single-chart HTML degrades to a static picture (dashboard keeps it).
+      ...(event.fields !== undefined ? { fields: event.fields } : {}),
     }],
     { title: event.title, echartsUmd, locale },
   )

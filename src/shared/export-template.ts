@@ -240,13 +240,21 @@ var RD_CHARTS = ${embedJson(payload)};
   }
 
   // ── rendering ───────────────────────────────────────────────────────────
+  // Model-authored strings (title, datasource, kpi unit, timestamps) are
+  // interpolated into innerHTML below — escape everything that came through
+  // the chart payload, or a prompt-injected value could ship script into the
+  // exported file (which typically travels by email/file share).
+  function esc(v) {
+    return String(v === null || v === undefined ? '' : v)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
   var host = document.getElementById('charts');
   RD_CHARTS.forEach(function (chart, index) {
     var card = document.createElement('div');
     card.className = 'card';
     var meta = chart.datasource ? ' · ' + chart.datasource : '';
-    card.innerHTML = '<h2>' + (index + 1) + '. ' + chart.title.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</h2>' +
-      '<div class="meta">' + chart.createdAt + meta + '</div>' +
+    card.innerHTML = '<h2>' + (index + 1) + '. ' + esc(chart.title) + '</h2>' +
+      '<div class="meta">' + esc(chart.createdAt) + esc(meta) + '</div>' +
       '<div class="filtered"></div>';
     var body = document.createElement('div');
     card.appendChild(body);
@@ -256,8 +264,8 @@ var RD_CHARTS = ${embedJson(payload)};
     if (chart.option && chart.option.kpi) {
       var stat = document.createElement('div');
       stat.className = 'kpi';
-      stat.innerHTML = Number(chart.option.kpi.value).toLocaleString(RD_LOCALE) +
-        (chart.option.kpi.unit ? '<small>' + chart.option.kpi.unit + '</small>' : '');
+      stat.innerHTML = esc(Number(chart.option.kpi.value).toLocaleString(RD_LOCALE)) +
+        (chart.option.kpi.unit ? '<small>' + esc(chart.option.kpi.unit) + '</small>' : '');
       body.appendChild(stat);
     } else {
       var el = document.createElement('div');

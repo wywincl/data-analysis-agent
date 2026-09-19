@@ -75,3 +75,16 @@ metrics:
     agg: sum
     grain: 按天
     unit: 元
+
+  # ---- 跨实体指标:通过 relationships 联表 ----
+  # orders 声明了 relationships: [{entity: users, on: [user_id, id]}],
+  # 所以这里 joins: [users] 之后,维度可以引用 users.city(Entity.column 形式)。
+  - name: daily_city_revenue
+    label: 每日城市收入
+    description: 每日已支付订单金额,按下单用户所在城市拆分(联 users 表)
+    extends: paid_amount
+    joins: [users]
+    dimensions: [users.city]
+    timeField: created_at
+    grain: 按天 × 城市
+    unit: 元

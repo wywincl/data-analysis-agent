@@ -60,7 +60,9 @@ describe('golden SQL: semantic layer builder', () => {
       'SELECT orders."status" AS "status", orders."city" AS "city", SUM(orders."amount") AS "value"',
       'FROM "orders" AS orders',
       "WHERE orders.\"created_at\" >= '2026-03-01'",
-      "  AND orders.\"created_at\" <= '2026-03-31'",
+      // A date-only `to` covers the WHOLE end day on datetime columns:
+      // `<= '2026-03-31'` would exclude everything after midnight.
+      "  AND orders.\"created_at\" < '2026-04-01'",
       'GROUP BY orders."status", orders."city"',
       'ORDER BY value DESC',
       'LIMIT 500',

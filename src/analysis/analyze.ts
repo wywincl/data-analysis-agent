@@ -42,6 +42,17 @@ function wrap(baseSql: string, alias: string): string {
   return `SELECT * FROM (\n${baseSql}\n) AS ${alias} LIMIT 20000`
 }
 
+const TOPN_AGGS = new Set(['count', 'sum', 'avg', 'min', 'max'])
+
+/**
+ * Coerce a cell to its numeric value, mapping NULL/empty (which `Number()`
+ * would silently turn into 0) to NaN so the finite-filters drop them.
+ */
+function toNumber(value: unknown): number {
+  if (value === null || value === undefined || value === '') return Number.NaN
+  return Number(value)
+}
+
 /** Column profile: type, nulls, cardinality, numeric stats, top values. */
 export async function profile(ctx: AnalysisContext, baseSql: string): Promise<Record<string, unknown>> {
   const result = await ctx.run(wrap(baseSql, 'rd_profile'))
@@ -51,7 +62,14 @@ export async function profile(ctx: AnalysisContext, baseSql: string): Promise<Re
     const nonNull = values.filter((v) => v !== null && v !== undefined)
     const numeric = nonNull.filter((v) => typeof v === 'number' && Number.isFinite(v)) as number[]
     const numbersLike = nonNull.filter((v) => typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)))
-    const isNumeric = numeric.length >= numbersLike.length && numeric.length > 0
+    // Columns that store numbers as strings (mysql decimalNumbers:false keeps
+    // DECIMAL as text) are numeric too — otherwise an amount column degrades
+    // to a categorical top-values list. Require most values to parse so a
+    // varchar with occasional digits stays categorical.
+    const parsedNumbers = numeric.length >= numbersLike.length
+      ? numeric
+      : numbersLike.map(Number)
+    const isNumeric = parsedNumbers.length > 0 && (numeric.length + numbersLike.length) / nonNull.length >= 0.8
     const base: Record<string, unknown> = {
       column,
       type: result.columns.find((c) => c.name === column)?.type ?? 'unknown',
@@ -60,13 +78,12 @@ export async function profile(ctx: AnalysisContext, baseSql: string): Promise<Re
       sample: nonNull.slice(0, 3).map((v) => typeof v === 'object' ? JSON.stringify(v) : v),
     }
     if (isNumeric) {
-      const nums = numeric.length >= numbersLike.length ? numeric : numbersLike.map(Number)
       base.numeric = {
-        min: Math.min(...nums),
-        max: Math.max(...nums),
-        mean: Math.round(mean(nums) * 1000) / 1000,
-        median: Math.round(median(nums) * 1000) / 1000,
-        stddev: Math.round(stddev(nums) * 1000) / 1000,
+        min: Math.min(...parsedNumbers),
+        max: Math.max(...parsedNumbers),
+        mean: Math.round(mean(parsedNumbers) * 1000) / 1000,
+        median: Math.round(median(parsedNumbers) * 1000) / 1000,
+        stddev: Math.round(stddev(parsedNumbers) * 1000) / 1000,
       }
     } else {
       const counts = new Map<string, number>()
@@ -90,6 +107,11 @@ export async function topn(
 ): Promise<Record<string, unknown>> {
   assertSafeIdentifier(options.dimension, 'dimension column')
   const agg = options.aggregate ?? (options.metric === undefined ? 'count' : 'sum')
+  if (!TOPN_AGGS.has(agg)) {
+    // The tool schema declares an enum, but hosts don't all enforce it —
+    // validate before the value reaches the derived SQL (defense in depth).
+    throw new GuardError(`aggregate "${agg}" is not supported (use count/sum/avg/min/max).`)
+  }
   if (agg !== 'count') {
     if (options.metric === undefined) throw new GuardError(`aggregate "${agg}" requires a metric column`)
     assertSafeIdentifier(options.metric, 'metric column')
@@ -125,7 +147,7 @@ export async function correlation(
      FROM (\n${baseSql}\n) AS rd_corr`
   const result = await ctx.run(sql)
   const pairs = result.rows
-    .map((row) => [Number(row.a), Number(row.b)] as const)
+    .map((row) => [toNumber(row.a), toNumber(row.b)] as const)
     .filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b))
   if (pairs.length < 3) throw new GuardError('Correlation needs at least 3 numeric (x, y) pairs.')
   const xs = pairs.map(([a]) => a)
@@ -155,7 +177,7 @@ export async function distribution(
   assertSafeIdentifier(options.column, 'column')
   const sql = `SELECT ${options.column} AS value FROM (\n${baseSql}\n) AS rd_dist`
   const result = await ctx.run(sql)
-  const values = result.rows.map((row) => Number(row.value)).filter((v) => Number.isFinite(v))
+  const values = result.rows.map((row) => toNumber(row.value)).filter((v) => Number.isFinite(v))
   if (values.length === 0) throw new GuardError(`Column "${options.column}" has no numeric values to distribute.`)
   const bucketCount = Math.min(Math.max(options.buckets ?? 12, 3), 60)
   const min = Math.min(...values)
@@ -231,7 +253,7 @@ export async function insight(
 
   // Row-grain stats over the measure.
   const raw = await ctx.run(`SELECT ${measure} AS value FROM (\n${baseSql}\n) AS rd_insight_raw`)
-  const values = raw.rows.map((row) => Number(row.value)).filter((v) => Number.isFinite(v))
+  const values = raw.rows.map((row) => toNumber(row.value)).filter((v) => Number.isFinite(v))
   if (values.length === 0) throw new GuardError(`Column "${measure}" has no numeric values to summarize.`)
 
   const total = values.reduce((sum, v) => sum + v, 0)
@@ -286,7 +308,7 @@ export async function insight(
        ORDER BY value DESC`,
     )
     const rows = grouped.rows
-      .map((row) => ({ dimension: row.dimension, value: Number(row.value) }))
+      .map((row) => ({ dimension: row.dimension, value: toNumber(row.value) }))
       .filter((row) => Number.isFinite(row.value))
     const groupTotal = rows.reduce((sum, row) => sum + row.value, 0)
     if (rows.length > 0) {

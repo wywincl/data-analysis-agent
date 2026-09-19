@@ -9,7 +9,7 @@
  * @module dsh-data-analysis/semantic/serialize
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync, rmSync, existsSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { parse, stringify } from 'yaml'
 import type { SemanticConfig } from './types.ts'
@@ -24,9 +24,24 @@ export function configToYaml(config: SemanticConfig): string {
   return header + stringify(doc)
 }
 
-/** Write semantic YAML to disk (overwrites). */
+/**
+ * Write semantic YAML to disk (overwrites).
+ *
+ * Atomic: writes to a temp file in the same directory then renames over the
+ * target. The semantic layer watches/reads the file, so a plain truncate+write
+ * could expose a partially-written file (or a brief ENOENT) to a concurrent
+ * read. Atomic replace guarantees readers always see either the old or the new
+ * complete content, never an in-between state.
+ */
 export function writeSemanticFile(path: string, content: string): void {
-  writeFileSync(path, content, 'utf8')
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`
+  writeFileSync(tmp, content, 'utf8')
+  try {
+    renameSync(tmp, path)
+  } catch (error) {
+    try { rmSync(tmp) } catch { /* best-effort cleanup */ }
+    throw error
+  }
 }
 
 /**
@@ -56,7 +71,7 @@ export function ensureWorkbenchInclude(rootPath: string, workbenchPath: string):
   const list = Array.isArray(includes) ? (includes as unknown[]).map(String) : []
   if (list.includes(rel)) return false
   obj.include = [...list, rel]
-  writeFileSync(rootPath, stringify(obj), 'utf8')
+  writeSemanticFile(rootPath, stringify(obj))
   return true
 }
 

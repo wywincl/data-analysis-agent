@@ -20,6 +20,8 @@ export interface MysqlConfig {
   readonly password?: string
   readonly database: string
   readonly ssl?: boolean
+  /** Skip the TLS certificate check (self-signed certs). Default: verify. */
+  readonly sslSkipVerify?: boolean
 }
 
 function inferType(value: unknown): string {
@@ -52,7 +54,9 @@ export function createMysqlProvider(name: string, config: MysqlConfig): DataSour
     user: config.user,
     password: config.password,
     database: config.database,
-    ssl: config.ssl ? { rejectUnauthorized: false } : undefined,
+    // TLS on means VERIFY by default — an encrypted-but-unchecked channel
+    // invites MITM; opting out requires the explicit sslSkipVerify flag.
+    ssl: config.ssl ? { rejectUnauthorized: config.sslSkipVerify !== true } : undefined,
     connectionLimit: 4,
     // Keep dates as strings so lossless-JSON snapshots stay JSON-safe.
     dateStrings: true,
@@ -89,7 +93,7 @@ export function createMysqlProvider(name: string, config: MysqlConfig): DataSour
       }
     },
 
-    async introspect(options: { readonly includeSamples?: boolean, readonly signal?: AbortSignal }): Promise<SchemaInfo> {
+    async introspect(options: { readonly includeSamples?: boolean, readonly signal?: AbortSignal } = {}): Promise<SchemaInfo> {
       const [tableRows] = await raceSignal(
         pool.query(
           `SELECT table_name AS name, table_type AS kind, table_rows AS est, table_comment AS comment
@@ -100,18 +104,31 @@ export function createMysqlProvider(name: string, config: MysqlConfig): DataSour
         'MySQL introspection',
       ) as [{ name: string, kind: string, est: number | null, comment: string | null }[], mysql.FieldPacket[]]
 
+      // One pass for ALL columns — per-table information_schema queries cost
+      // one round trip each and crawl on wide schemas.
+      const [columnRows] = await raceSignal(
+        pool.query(
+          `SELECT table_name, column_name AS name, column_type AS dataType, is_nullable AS nullable, column_comment AS comment
+           FROM information_schema.columns WHERE table_schema = ? ORDER BY table_name, ordinal_position`,
+          [config.database],
+        ),
+        options.signal,
+        'MySQL introspection',
+      ) as [{ table_name: string, name: string, dataType: string, nullable: 'YES' | 'NO', comment: string | null }[], mysql.FieldPacket[]]
+      const columnsByTable = new Map<string, { name: string, dataType: string, nullable: boolean, comment?: string }[]>()
+      for (const col of columnRows) {
+        const list = columnsByTable.get(col.table_name) ?? []
+        list.push({
+          name: col.name,
+          dataType: col.dataType,
+          nullable: col.nullable === 'YES',
+          ...(col.comment ? { comment: col.comment } : {}),
+        })
+        columnsByTable.set(col.table_name, list)
+      }
+
       const tables = []
       for (const table of tableRows) {
-        const [columnRows] = await raceSignal(
-          pool.query(
-            `SELECT column_name AS name, column_type AS dataType, is_nullable AS nullable, column_comment AS comment
-             FROM information_schema.columns WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position`,
-            [config.database, table.name],
-          ),
-          options.signal,
-          'MySQL introspection',
-        ) as [{ name: string, dataType: string, nullable: 'YES' | 'NO', comment: string | null }[], mysql.FieldPacket[]]
-
         const samples = options.includeSamples === true
           ? (await raceSignal(
             pool.query(`SELECT * FROM ${quoteIdentifier(table.name, dialect)} LIMIT 5`),
@@ -125,12 +142,7 @@ export function createMysqlProvider(name: string, config: MysqlConfig): DataSour
           type: table.kind === 'VIEW' ? ('view' as const) : ('table' as const),
           ...(table.comment ? { comment: table.comment } : {}),
           ...(typeof table.est === 'number' ? { rowCountEstimate: table.est } : {}),
-          columns: columnRows.map((col) => ({
-            name: col.name,
-            dataType: col.dataType,
-            nullable: col.nullable === 'YES',
-            ...(col.comment ? { comment: col.comment } : {}),
-          })),
+          columns: columnsByTable.get(table.name) ?? [],
           ...(samples !== undefined ? { samples } : {}),
         })
       }

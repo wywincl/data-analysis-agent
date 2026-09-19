@@ -3,26 +3,48 @@
 # entity 上的 timeField / dimensions / filters 是该实体下所有指标的默认继承来源:
 # 指标没有声明时自动沿用,声明了则以指标为准。这样"这个域默认按哪列看时间、能按哪些维度拆"
 # 只写一次,不用在每个指标里重复。
+#
+# 本体构件示范:
+#   key            主键列(身份语义,inspect/catalog 会标注 PK);
+#   relationships  实体间的具名关系(FK + join 列对),跨表指标用 joins 引用;
+#   columns.values 枚举列的声明值域,模型可见,lint 校验 filters 里的取值。
 
 entities:
   - table: orders
     label: 订单表
     description: 订单事实表,一行一笔订单,时间列为 created_at
+    key: id
     # 订单域可拆维度的默认集合;单个指标可用自己的 dimensions 覆盖。
     # (这里刻意不设 timeField —— gmv_total 是"全区间单值"指标,一旦继承到时间列,
     #  query_metric 就会按天分组,单值 KPI 会变成时间序列。时间列由需要的指标各自声明。)
     dimensions: [status, user_id]
+    # 具名关系:订单 → 下单用户。声明后 daily_city_revenue 这类指标
+    # 可以 joins: [users],把 users.city 当维度用。
+    relationships:
+      - entity: users
+        on: [user_id, id]
+        name: 下单用户
+        cardinality: many-to-one
     columns:
+      - { name: id, label: 订单 ID }
       - { name: user_id, label: 用户 ID, description: "下单用户,关联 users.id" }
       - { name: amount, label: 订单金额, description: 实付金额, unit: 元 }
-      - { name: status, label: 订单状态, description: "paid=已支付 / shipped=已发货 / refunded=已退款 / pending=待支付" }
+      - name: status
+        label: 订单状态
+        values:
+          - { value: paid, label: 已支付 }
+          - { value: shipped, label: 已发货 }
+          - { value: refunded, label: 已退款 }
+          - { value: pending, label: 待支付 }
       - { name: created_at, label: 下单时间 }
 
   - table: users
     label: 用户表
     description: 用户维表,一行一个注册用户
+    key: id
     dimensions: [city, signup_date]
     columns:
+      - { name: id, label: 用户 ID }
       - { name: city, label: 所在城市 }
       - { name: signup_date, label: 注册日期 }
 

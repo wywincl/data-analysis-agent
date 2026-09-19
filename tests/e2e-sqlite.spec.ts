@@ -79,10 +79,14 @@ describe('registry', () => {
 
   it('extracts chart payloads from tool/result meta shapes', async () => {
     const { chartFromResultMeta } = await import('../src/events.ts')
-    expect(chartFromResultMeta({ rdChart: { chartId: 'c1', echartsOption: {} } })?.chartId).toBe('c1')
+    // columns + data are part of the contract (CSV export / cross-filtering).
+    const full = { chartId: 'c1', echartsOption: {}, columns: [{ name: 'a', type: 'x' }], data: [] }
+    expect(chartFromResultMeta({ rdChart: full })?.chartId).toBe('c1')
     expect(chartFromResultMeta(undefined)).toBeUndefined()
     expect(chartFromResultMeta({ other: 1 })).toBeUndefined()
     expect(chartFromResultMeta({ rdChart: { nope: true } })).toBeUndefined()
+    // Missing columns/data would crash /data-csv downstream — rejected.
+    expect(chartFromResultMeta({ rdChart: { chartId: 'c2', echartsOption: {} } })).toBeUndefined()
   })
 })
 

@@ -47,8 +47,22 @@ export interface BuiltMetricSql {
 export function sqlLiteral(value: string | number | boolean, dialect: SqlDialect): string {
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'null'
   if (typeof value === 'boolean') return dialect === 'postgresql' || dialect === 'hive' ? value.toString() : value ? '1' : '0'
-  // Single-quote escaping covers mysql/postgresql/sqlite/hive string literals.
-  return `'${value.replace(/'/g, "''")}'`
+  // Single-quote doubling covers mysql/postgresql/sqlite/hive; mysql and hive
+  // additionally treat backslash as an escape character, so a trailing `\`
+  // would swallow the closing quote (and with it the rest of the statement).
+  const escaped = dialect === 'mysql' || dialect === 'hive'
+    ? value.replace(/\\/g, '\\\\').replace(/'/g, "''")
+    : value.replace(/'/g, "''")
+  return `'${escaped}'`
+}
+
+/** The day after a `YYYY-MM-DD` date, for an exclusive upper bound. */
+function nextDay(isoDate: string): string {
+  const [y, m, d] = isoDate.split('-').map(Number)
+  const date = new Date(Date.UTC(y, m - 1, d) + 86_400_000)
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0')
+  const dd = String(date.getUTCDate()).padStart(2, '0')
+  return `${date.getUTCFullYear()}-${mm}-${dd}`
 }
 
 export class SemanticLayer {
@@ -210,14 +224,19 @@ export class SemanticLayer {
     this.watchedKey = key
     for (const file of targets) {
       try {
-        this.watchers.push(watch(file, () => {
+        const watcher = watch(file, () => {
           clearTimeout(this.reloadTimer)
           // Editors emit multiple events per save; collapse to one reload.
           this.reloadTimer = setTimeout(() => {
             this.reloadSync()
             this.onReload(this)
           }, 300)
-        }))
+        })
+        // Deleted/renamed targets and EMFILE/EPERM surface as 'error' events;
+        // an unhandled one crashes the host process. The 2s poll covers any
+        // change a dead watcher misses.
+        watcher.on('error', () => { /* poll fallback re-derives the signature */ })
+        this.watchers.push(watcher)
       } catch { /* file may not exist yet; /data-reload covers it */ }
     }
   }
@@ -330,10 +349,9 @@ export class SemanticLayer {
     dialect: SqlDialect = 'sqlite',
     options: { currentRole?: string } = {},
   ): BuiltMetricSql {
-    const { metric } = this.resolveMetric(metricName)
+    const { metric, entity, datasource } = this.resolveMetric(metricName)
     if (metric.agg === 'ratio') return this.buildRatioSql(metricName, query, dialect, options)
 
-    const { entity, datasource } = this.resolveMetric(metricName)
     const currentRole = options.currentRole
 
     const baseAlias = entity.table
@@ -453,7 +471,14 @@ export class SemanticLayer {
       whereParts.push(`${colExpr(assertSafeIdentifier(metric.timeField, 'timeField'))} >= ${sqlLiteral(query.from, dialect)}`)
     }
     if (query.to !== undefined && metric.timeField !== undefined) {
-      whereParts.push(`${colExpr(assertSafeIdentifier(metric.timeField, 'timeField'))} <= ${sqlLiteral(query.to, dialect)}`)
+      const timeCol = colExpr(assertSafeIdentifier(metric.timeField, 'timeField'))
+      if (/^\d{4}-\d{2}-\d{2}$/.test(query.to)) {
+        // Date-only bound on a DATETIME/TIMESTAMP column: `<= '2026-03-01'`
+        // would exclude everything after midnight — cover the whole day.
+        whereParts.push(`${timeCol} < ${sqlLiteral(nextDay(query.to), dialect)}`)
+      } else {
+        whereParts.push(`${timeCol} <= ${sqlLiteral(query.to, dialect)}`)
+      }
     }
     if (currentRole !== undefined && entity.rowFilter !== undefined && !mayRead(baseAlias)) {
       // The YAML predicate is operator-authored (trusted, like metric.filters)
@@ -464,7 +489,8 @@ export class SemanticLayer {
       whereParts.push(entity.rowFilter.replace(/\{role\}/g, currentRole.replace(/'/g, "''")))
     }
 
-    const limit = Math.min(Math.max(query.limit ?? 500, 1), 5000)
+    const rawLimit = query.limit
+    const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit! : 500, 1), 5000)
     const where = whereParts.length > 0 ? `\nWHERE ${whereParts.join('\n  AND ')}` : ''
     const groupBy = groupParts.length > 0 ? `\nGROUP BY ${groupParts.join(', ')}` : ''
     const orderBy = groupParts.length > 0
@@ -553,10 +579,41 @@ export class SemanticLayer {
       const entity = this.config.entities?.find((entry) => entry.table === entityName)
       if (entity === undefined) throw new GuardError(`Ratio side references unknown entity "${entityName}".`)
       agg = agg ?? (measure !== undefined ? 'sum' : 'count')
-      const aggExpr = agg === 'count'
-        ? 'COUNT(*)'
-        : `${agg.toUpperCase()}(${quoteIdentifier(assertSafeIdentifier(measure!, 'ratio measure'), dialect)})`
+      const measureColumn = measure !== undefined ? quoteIdentifier(assertSafeIdentifier(measure, 'ratio measure'), dialect) : undefined
+      const aggExpr = (() => {
+        if (agg === 'count') return 'COUNT(*)'
+        if (measureColumn === undefined) throw new GuardError(`Ratio side agg "${agg}" requires a measure column.`)
+        if (agg === 'count_distinct') return `COUNT(DISTINCT ${measureColumn})`
+        if (agg === 'sum' || agg === 'avg' || agg === 'min' || agg === 'max') return `${agg.toUpperCase()}(${measureColumn})`
+        // `expression`/`ratio` refs have no single-column form — refuse
+        // rather than emit `EXPRESSION(...)` and let the DB reject it.
+        throw new GuardError(`Ratio side agg "${agg}" is not supported — use count/count_distinct/sum/avg/min/max, or point the side at a plain metric.`)
+      })()
+      // Model-supplied filters/time bounds must actually reach both sides.
+      // A predicate applies to this side only when the column exists here; a
+      // filter key that exists on NEITHER side is a caller error (refuse).
+      const sideColumns = new Set((entity.columns ?? []).map((columnMeta) => columnMeta.name))
       const predicates = [...(metric.filters ?? []), ...extraFilters]
+      for (const [key, raw] of Object.entries(query.filters ?? {})) {
+        if (!sideColumns.has(key)) continue
+        const column = quoteIdentifier(assertSafeIdentifier(key, 'filter dimension'), dialect)
+        if (Array.isArray(raw)) {
+          if (raw.length === 0) continue
+          const literals = (raw as readonly (string | number)[]).map((value) => sqlLiteral(value, dialect)).join(', ')
+          predicates.push(`${column} IN (${literals})`)
+        } else {
+          predicates.push(`${column} = ${sqlLiteral(raw as string | number | boolean, dialect)}`)
+        }
+      }
+      if (metric.timeField !== undefined && sideColumns.has(metric.timeField)) {
+        const timeCol = quoteIdentifier(assertSafeIdentifier(metric.timeField, 'timeField'), dialect)
+        if (query.from !== undefined) predicates.push(`${timeCol} >= ${sqlLiteral(query.from, dialect)}`)
+        if (query.to !== undefined) {
+          predicates.push(/^\d{4}-\d{2}-\d{2}$/.test(query.to)
+            ? `${timeCol} < ${sqlLiteral(nextDay(query.to), dialect)}`
+            : `${timeCol} <= ${sqlLiteral(query.to, dialect)}`)
+        }
+      }
       const dimSelect = requested.map((dimension) => `${quoteIdentifier(assertSafeIdentifier(dimension, 'dim'), dialect)} AS ${quoteIdentifier(dimension, dialect)}`).join(', ')
       const dimGroup = requested.map((dimension) => quoteIdentifier(assertSafeIdentifier(dimension, 'dim'), dialect)).join(', ')
       const selectList = requested.length > 0 ? `${dimSelect}, ${aggExpr} AS v` : `${aggExpr} AS v`
@@ -565,9 +622,35 @@ export class SemanticLayer {
       return `SELECT ${selectList}\nFROM ${quoteIdentifier(entityName, dialect)}${whereClause}${groupBy}`
     }
 
+    // Refuse filter keys that exist on neither side entity — they would
+    // otherwise be dropped and the ratio silently computed over everything.
+    {
+      const entityNames = new Set<string>()
+      for (const ref of [num, den]) {
+        const refEntity = ref.entity
+          ?? (ref.metric !== undefined ? this.config.metrics?.find((entry) => entry.name === ref.metric)?.entity : undefined)
+          ?? metric.entity
+        entityNames.add(refEntity)
+      }
+      const knownColumns = new Set<string>()
+      for (const name of entityNames) {
+        const found = this.config.entities?.find((entry) => entry.table === name)
+        for (const column of found?.columns ?? []) knownColumns.add(column.name)
+      }
+      for (const key of Object.keys(query.filters ?? {})) {
+        if (!declared.includes(key)) {
+          throw new GuardError(`Filter key "${key}" is not a declared dimension of ratio metric "${metric.name}" (allowed: ${declared.join('/') || 'none'}).`)
+        }
+        if (!knownColumns.has(key)) {
+          throw new GuardError(`Filter key "${key}" does not exist on either ratio side of "${metric.name}".`)
+        }
+      }
+    }
+
     const numSql = sideSql(num)
     const denSql = sideSql(den)
-    const limit = Math.min(Math.max(query.limit ?? 500, 1), 5000)
+    const rawLimit = query.limit
+    const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit! : 500, 1), 5000)
     let sql: string
     if (requested.length > 0) {
       const joinOn = requested.map((dimension) => `num.${quoteIdentifier(dimension, dialect)} = den.${quoteIdentifier(dimension, dialect)}`).join(' AND ')

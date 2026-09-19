@@ -29,49 +29,56 @@ export function registerSemanticTools(ctx: Context, config: Config, registry: Da
     name: 'list_semantic',
     description: s('tool.list_semantic.desc'),
     parameters: {},
-    output: {
-      schema: { type: 'object', additionalProperties: true } as const,
-      render: (_args, value) => {
-        const result = value as unknown as {
-          metrics: { name: string, label?: string, agg: string, measure?: string, entity: string, resolvedDatasource: string, formula?: string, grain?: string, dimensions?: string[], filters?: string[], unit?: string, timeField?: string }[]
-          terms: { name: string, aliases?: string[], description: string }[]
-          entities: { table: string, label?: string, description?: string }[]
-          issues?: LintIssue[]
-          files?: string[]
-          error?: string, file?: string
-        }
-        const locale: HostLocale = config.locale === 'en' ? 'en' : 'zh'
-        const s = (key: keyof typeof zh): string => locale === 'en' ? en[key] : zh[key]
-        const parts: string[] = []
-        if (result.error !== undefined) parts.push(`⚠️ ${s('tool.list_semantic.error')}: ${result.error}`)
-        if (result.file === undefined) parts.push(s('tool.list_semantic.noFile'))
-        if ((result.issues?.length ?? 0) > 0) {
-          parts.push(`⚠️ ${tpl(s('tool.list_semantic.lintWarn'), { count: result.issues!.length })}`)
-          parts.push(formatLintIssues(result.issues!, locale).map((issue) => `- [${issue.code}] ${issue.path}\n    ${issue.message}${issue.hint !== undefined ? `\n    → ${issue.hint}` : ''}`).join('\n'))
-        }
-        if (result.metrics.length > 0) {
-          parts.push(s('tool.list_semantic.metricsHeader'))
-          parts.push(result.metrics.map((metric) => {
-            const dims = metric.dimensions?.length ? ` | dims: ${metric.dimensions.join('/')}` : ''
-            const time = metric.timeField !== undefined ? ` | time: ${metric.timeField}` : ''
-            return `- ${metric.name} — ${metric.label ?? metric.name} [${metric.resolvedDatasource}] ${metric.agg}(${metric.measure ?? '*'}) on ${metric.entity}${time}${dims}${metric.unit !== undefined ? ` | unit: ${metric.unit}` : ''}${metric.formula !== undefined ? `\n    ${s('tool.list_semantic.formula')}: ${metric.formula}` : ''}${metric.grain !== undefined ? ` | grain: ${metric.grain}` : ''}${metric.filters?.length ? `\n    ${s('tool.list_semantic.filters')}: ${metric.filters.join(' AND ')}` : ''}`
-          }).join('\n'))
-        }
-        if (result.terms.length > 0) {
-          parts.push(s('tool.list_semantic.termsHeader'))
-          parts.push(result.terms.map((term) => `- ${term.name}${term.aliases?.length ? ` (aka ${term.aliases.join('/')})` : ''}: ${term.description}`).join('\n'))
-        }
-        if (result.entities.length > 0) {
-          parts.push(s('tool.list_semantic.entitiesHeader'))
-          parts.push(result.entities.map((entity) => `- ${entity.table}${entity.label !== undefined ? ` · ${entity.label}` : ''}${entity.description !== undefined ? ` — ${entity.description}` : ''}`).join('\n'))
-        }
-        if ((result.files?.length ?? 0) > 1) {
-          parts.push(tpl(s('tool.list_semantic.filesHeader'), { count: result.files!.length }))
-          parts.push(result.files!.map((file) => `- ${file}`).join('\n'))
-        }
-        return [{ type: 'text', text: parts.join('\n\n') || s('tool.list_semantic.empty') }]
+      output: {
+        schema: { type: 'object', additionalProperties: true } as const,
+        render: (_args, value) => {
+          const result = value as unknown as {
+            metrics: { name: string, label?: string, agg: string, measure?: string, entity: string, resolvedDatasource: string, formula?: string, grain?: string, dimensions?: string[], filters?: string[], unit?: string, timeField?: string, joins?: string[] }[]
+            terms: { name: string, aliases?: string[], description: string }[]
+            entities: { table: string, label?: string, description?: string, key?: string, relationships?: { entity: string, on: [string, string], name?: string }[] }[]
+            issues?: LintIssue[]
+            files?: string[]
+            error?: string, file?: string
+          }
+          const locale: HostLocale = config.locale === 'en' ? 'en' : 'zh'
+          const s = (key: keyof typeof zh): string => locale === 'en' ? en[key] : zh[key]
+          const parts: string[] = []
+          if (result.error !== undefined) parts.push(`⚠️ ${s('tool.list_semantic.error')}: ${result.error}`)
+          if (result.file === undefined) parts.push(s('tool.list_semantic.noFile'))
+          if ((result.issues?.length ?? 0) > 0) {
+            parts.push(`⚠️ ${tpl(s('tool.list_semantic.lintWarn'), { count: result.issues!.length })}`)
+            parts.push(formatLintIssues(result.issues!, locale).map((issue) => `- [${issue.code}] ${issue.path}\n    ${issue.message}${issue.hint !== undefined ? `\n    → ${issue.hint}` : ''}`).join('\n'))
+          }
+          if (result.metrics.length > 0) {
+            parts.push(s('tool.list_semantic.metricsHeader'))
+            parts.push(result.metrics.map((metric) => {
+              const dims = metric.dimensions?.length ? ` | dims: ${metric.dimensions.join('/')}` : ''
+              const time = metric.timeField !== undefined ? ` | time: ${metric.timeField}` : ''
+              const joins = metric.joins?.length ? ` | joins: ${metric.joins.join(', ')}` : ''
+              return `- ${metric.name} — ${metric.label ?? metric.name} [${metric.resolvedDatasource}] ${metric.agg}(${metric.measure ?? '*'}) on ${metric.entity}${time}${dims}${joins}${metric.unit !== undefined ? ` | unit: ${metric.unit}` : ''}${metric.formula !== undefined ? `\n    ${s('tool.list_semantic.formula')}: ${metric.formula}` : ''}${metric.grain !== undefined ? ` | grain: ${metric.grain}` : ''}${metric.filters?.length ? `\n    ${s('tool.list_semantic.filters')}: ${metric.filters.join(' AND ')}` : ''}`
+            }).join('\n'))
+          }
+          if (result.terms.length > 0) {
+            parts.push(s('tool.list_semantic.termsHeader'))
+            parts.push(result.terms.map((term) => `- ${term.name}${term.aliases?.length ? ` (aka ${term.aliases.join('/')})` : ''}: ${term.description}`).join('\n'))
+          }
+          if (result.entities.length > 0) {
+            parts.push(s('tool.list_semantic.entitiesHeader'))
+            parts.push(result.entities.map((entity) => {
+              const key = entity.key !== undefined ? ` | key: ${entity.key}` : ''
+              const relationships = entity.relationships?.length
+                ? ` | rel: ${entity.relationships.map((rel) => `→${rel.entity}(${rel.on.join('=')}${rel.name !== undefined ? ` ${rel.name}` : ''})`).join(' ')}`
+                : ''
+              return `- ${entity.table}${entity.label !== undefined ? ` · ${entity.label}` : ''}${entity.description !== undefined ? ` — ${entity.description}` : ''}${key}${relationships}`
+            }).join('\n'))
+          }
+          if ((result.files?.length ?? 0) > 1) {
+            parts.push(tpl(s('tool.list_semantic.filesHeader'), { count: result.files!.length }))
+            parts.push(result.files!.map((file) => `- ${file}`).join('\n'))
+          }
+          return [{ type: 'text', text: parts.join('\n\n') || s('tool.list_semantic.empty') }]
+        },
       },
-    },
     async execute() {
       return semantic.catalog() as unknown as Record<string, JsonValue>
     },

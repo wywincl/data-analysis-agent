@@ -111,7 +111,7 @@ export function createSparkLivyProvider(name: string, config: SparkLivyConfig, h
     }
   }
 
-  async function runStatement(sessionId: number, sql: string): Promise<{ columns: string[], rows: Record<string, string>[] }> {
+  async function runStatement(sessionId: number, sql: string, deadline?: number): Promise<{ columns: string[], rows: Record<string, string>[] }> {
     const res = await http('POST', `${base}/sessions/${sessionId}/statements`, { json: { code: sql } })
     if (res.status < 200 || res.status >= 300) {
       throw new Error(`Livy run statement failed (${res.status}): ${res.text}`)
@@ -120,7 +120,9 @@ export function createSparkLivyProvider(name: string, config: SparkLivyConfig, h
     if (typeof statementId !== 'number') throw new Error(`Livy run statement returned no id: ${res.text}`)
     const started = Date.now()
     for (;;) {
-      if (Date.now() - started > timeoutMs) throw new Error('Livy statement did not finish in time.')
+      if (Date.now() - started > timeoutMs || (deadline !== undefined && Date.now() > deadline)) {
+        throw new Error('Livy statement did not finish in time.')
+      }
       const poll = await http('GET', `${base}/sessions/${sessionId}/statements/${statementId}`)
       const body = asRecord(poll.json)
       const state = String(body.state ?? '')
@@ -145,15 +147,21 @@ export function createSparkLivyProvider(name: string, config: SparkLivyConfig, h
     return { columns, rows: sliced as Record<string, never>[], rowCount: parsed.rows.length, truncated }
   }
 
+  /** Backtick-quote a table name coming from the server (introspection output). */
+  const quoteName = (tableName: string): string => `\`${tableName.replace(/`/g, '')}\``
+
   return {
     name,
     type: 'spark',
     dialect,
     async query(sql: string, options: QueryOptions): Promise<QueryResult> {
       if (options.signal?.aborted) throw new Error('Query aborted before execution.')
+      // Per-query deadline: the configured heartbeatTimeoutMs is the fallback,
+      // options.timeoutMs (set by the tools per call) wins when present.
+      const deadline = Date.now() + (Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : timeoutMs)
       const sessionId = await createSession()
       try {
-        const parsed = await runStatement(sessionId, sql)
+        const parsed = await runStatement(sessionId, sql, deadline)
         return toQueryResult(parsed, options)
       } finally {
         // Best-effort cleanup; a dead session is harmless and self-expires.
@@ -161,18 +169,23 @@ export function createSparkLivyProvider(name: string, config: SparkLivyConfig, h
       }
     },
 
-    async introspect(options: { readonly includeSamples?: boolean, readonly signal?: AbortSignal }): Promise<SchemaInfo> {
+    async introspect(options: { readonly includeSamples?: boolean, readonly signal?: AbortSignal } = {}): Promise<SchemaInfo> {
+      const deadline = Date.now() + timeoutMs
       const sessionId = await createSession()
       try {
-        const shown = await runStatement(sessionId, 'SHOW TABLES')
-        const tables = shown.rows.map((row) => String(row[Object.keys(row)[0] ?? ''] ?? ''))
+        const shown = await runStatement(sessionId, 'SHOW TABLES', deadline)
+        // Spark 3 SHOW TABLES columns are namespace / tableName / isTemporary —
+        // the namespace (often empty or `default`) is NOT the table name.
+        const tables = shown.rows
+          .map((row) => String(row.tableName ?? row[Object.keys(row)[0] ?? ''] ?? ''))
+          .filter((tableName) => tableName.length > 0)
         const result = await Promise.all(tables.map(async (tableName) => {
-          const described = await runStatement(sessionId, `DESCRIBE ${tableName}`)
+          const described = await runStatement(sessionId, `DESCRIBE ${quoteName(tableName)}`, deadline)
           const columns = described.rows
             .map((row) => ({ name: String(row.col_name ?? ''), dataType: String(row.data_type ?? 'string') }))
             .filter((column) => column.name.length > 0)
           const samples = options.includeSamples === true
-            ? (await runStatement(sessionId, `SELECT * FROM ${tableName} LIMIT 5`)).rows as Record<string, never>[]
+            ? (await runStatement(sessionId, `SELECT * FROM ${quoteName(tableName)} LIMIT 5`, deadline)).rows as Record<string, never>[]
             : undefined
           return { name: tableName, type: 'table' as const, columns, ...(samples !== undefined ? { samples } : {}) }
         }))

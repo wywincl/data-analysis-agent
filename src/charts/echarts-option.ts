@@ -89,7 +89,10 @@ export function buildEchartsOption(input: ChartOptionInput): Record<string, Json
 
   if (chartType === 'pie') {
     const nameField = input.nameField ?? Object.keys(data[0])[0]
-    const valueField = input.valueField ?? Object.keys(data[0])[1] ?? Object.keys(data[0])[0]
+    // A single-column dataset has no separate value column — fall back to a
+    // COUNT-style constant only as a last resort; prefer the second column.
+    const keys = Object.keys(data[0])
+    const valueField = input.valueField ?? (keys[1] ?? keys[0])
     return {
       ...baseOption(title),
       tooltip: { trigger: 'item' },
@@ -117,7 +120,11 @@ export function buildEchartsOption(input: ChartOptionInput): Record<string, Json
         name: spec.name ?? spec.field,
         type: 'scatter',
         symbolSize: 7,
-        data: data.map((row) => [num(row[xField]) ?? 0, num(row[spec.field]) ?? 0]),
+        // Missing/non-numeric coordinates drop the point entirely instead of
+        // piling every invalid row onto the origin and skewing the picture.
+        data: data
+          .map((row) => [num(row[xField]), num(row[spec.field])])
+          .filter((point) => point[0] !== null && point[1] !== null),
       })),
     }
   }
@@ -130,6 +137,9 @@ export function buildEchartsOption(input: ChartOptionInput): Record<string, Json
     const ys = [...new Set(data.map((row) => cellText(row[yField])))].filter((v) => v !== '')
     const values = data.map((row) => [xs.indexOf(cellText(row[xField])), ys.indexOf(cellText(row[yField])), num(row[valueField]) ?? 0])
       .filter((entry) => entry[1] >= 0)
+    // Color scale spans the ACTUAL value range: a hardcoded min 0 clamps
+    // all-negative datasets to a single color band.
+    const minV = values.reduce<number>((sum, entry) => Math.min(sum, entry[2]), 0)
     const maxV = values.reduce<number>((sum, entry) => Math.max(sum, entry[2]), 1)
     return {
       ...baseOption(title),
@@ -137,7 +147,7 @@ export function buildEchartsOption(input: ChartOptionInput): Record<string, Json
       grid: { left: 64, right: 24, top: 40, bottom: 56 },
       xAxis: { type: 'category', data: xs, splitArea: { show: true } },
       yAxis: { type: 'category', data: ys, splitArea: { show: true } },
-      visualMap: { min: 0, max: maxV, calculable: true, orient: 'horizontal', left: 'center', bottom: 0 },
+      visualMap: { min: Math.min(minV, 0), max: Math.max(maxV, minV + 1), calculable: true, orient: 'horizontal', left: 'center', bottom: 0 },
       series: [{ type: 'heatmap', data: values, label: { show: values.length <= 200 } }],
     }
   }

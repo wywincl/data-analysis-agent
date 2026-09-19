@@ -32,6 +32,37 @@ export class GuardError extends Error {
 const DANGEROUS_PATTERN =
   /\b(into\s+(outfile|dumpfile)|for\s+update\b|for\s+share\b|lock\s+in\s+share\s+mode|into\s+@|select\s+.*into\s+(table|var\b))/i
 
+/**
+ * Strip line and block comments so keyword patterns can't hide between
+ * whitespace-equivalent tokens: an INTO / OUTFILE pair split by a block
+ * comment defeats the raw regex. Only used for the pattern check — the
+ * parser sees the original text, so a `--` inside a string literal is
+ * unaffected.
+ */
+function stripSqlComments(sql: string): string {
+  return sql
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/--[^\n]*/g, ' ')
+    .replace(/#[^\n]*/g, ' ')
+}
+
+/**
+ * Rewrite a trailing top-level `LIMIT n` / `LIMIT o, n` / `LIMIT n OFFSET o`
+ * so the row count never exceeds `cap`. Returns undefined when the statement
+ * does not end with a recognizable LIMIT clause (caller denies — fail closed).
+ */
+function clampTailLimit(sql: string, cap: number): string | undefined {
+  const match = /\blimit\s+(\d+)\s*(?:,\s*(\d+))?\s*(?:offset\s+(\d+))?\s*$/i.exec(sql)
+  if (match === null) return undefined
+  // MySQL `LIMIT o, n` puts the offset first; the row count is the LAST number.
+  const rows = Number.parseInt(match[2] !== undefined ? match[2] : match[1]!, 10)
+  if (rows <= cap) return sql
+  const head = sql.slice(0, match.index)
+  if (match[2] !== undefined) return `${head}LIMIT ${match[1]}, ${cap}`
+  if (match[3] !== undefined) return `${head}LIMIT ${cap} OFFSET ${match[3]}`
+  return `${head}LIMIT ${cap}`
+}
+
 /** Escape one identifier for the given dialect (introspection/analysis SQL). */
 export function quoteIdentifier(name: string, dialect: SqlDialect): string {
   const clean = name.replace(/["'`]/g, '')
@@ -65,7 +96,7 @@ export function guardSelectOnly(rawSql: string, dialect: SqlDialect, maxRows: nu
   const sql = rawSql.trim().replace(/;\s*$/, '')
   if (sql.length === 0) throw new GuardError('Empty SQL statement.')
   if (sql.includes(';')) throw new GuardError('Only a single SQL statement is allowed.')
-  if (DANGEROUS_PATTERN.test(sql)) {
+  if (DANGEROUS_PATTERN.test(stripSqlComments(sql))) {
     throw new GuardError('Rejected: locking / INTO / OUTFILE constructs are not allowed (read-only analyst access).')
   }
 
@@ -98,8 +129,15 @@ export function guardSelectOnly(rawSql: string, dialect: SqlDialect, maxRows: nu
   const mutating = tables.find((t) => !t.startsWith('select:'))
   if (mutating !== undefined) throw new GuardError(`Only read access is allowed (found "${mutating}").`)
 
+  // The cap bounds server work, not just what we hold — an existing large
+  // LIMIT would materialize before the provider slices, so clamp it too.
+  const cap = Number.isFinite(maxRows) ? Math.max(1, Math.floor(maxRows)) : 1
   if (astAny.limit === undefined || astAny.limit === null) {
-    return { sql: `${sql} LIMIT ${Math.max(1, Math.floor(maxRows))}`, tables }
+    return { sql: `${sql} LIMIT ${cap}`, tables }
   }
-  return { sql, tables }
+  const clamped = clampTailLimit(sql, cap)
+  if (clamped === undefined) {
+    throw new GuardError(`Existing LIMIT could not be clamped to the row cap (${cap}) — lower the LIMIT and retry.`)
+  }
+  return { sql: clamped, tables }
 }

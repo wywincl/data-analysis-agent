@@ -526,3 +526,161 @@ describe('demo/semantic.yaml', () => {
     }
   })
 })
+
+describe('实体继承: entity extends', () => {
+  const BASE = `entities:
+  - table: users
+    label: 用户表
+    key: id
+    dimensions: [city]
+    rowFilter: "tenant = 1"
+    columns:
+      - { name: id, label: 用户 ID }
+      - { name: city, label: 城市 }
+      - { name: status, label: 状态, values: [active, banned] }
+    relationships:
+      - entity: orders
+        on: [id, user_id]
+        name: 用户的订单
+        cardinality: many-to-one
+  - table: orders
+    label: 订单表
+    timeField: created_at
+    columns:
+      - { name: user_id, label: 用户 ID }
+      - { name: amount, label: 金额 }
+      - { name: created_at, label: 下单时间 }
+`
+
+  it('子实体继承列(按字段合并)/关系/主键,标量字段子覆盖', () => {
+    const config = parseSemanticConfig(`${BASE}  - table: vip_users
+    extends: users
+    label: VIP 用户
+    columns:
+      - { name: city, label: 常住城市 }
+`)
+    const vip = config.entities?.find((entity) => entity.table === 'vip_users')
+    // 继承:extends 已解析掉;key、关系、未覆盖列原样带下来
+    expect(vip?.extends).toBeUndefined()
+    expect(vip?.key).toBe('id')
+    expect(vip?.relationships).toEqual([{ entity: 'orders', on: ['id', 'user_id'], name: '用户的订单', cardinality: 'many-to-one' }])
+    expect(vip?.columns?.find((column) => column.name === 'id')?.label).toBe('用户 ID')
+    // 按字段合并:子实体只改 label,基础实体声明的 values 域保留
+    expect(vip?.columns?.find((column) => column.name === 'city')?.label).toBe('常住城市')
+    expect(vip?.columns?.find((column) => column.name === 'status')?.values).toEqual(['active', 'banned'])
+  })
+
+  it('filters / rowFilter 逐级累加(AND),子实体不能丢掉基础口径', () => {
+    const config = parseSemanticConfig(`${BASE}  - table: vip_users
+    extends: users
+    label: VIP 用户
+    filters: ["vip = 1"]
+    rowFilter: "region = 'cn'"
+`)
+    const vip = config.entities?.find((entity) => entity.table === 'vip_users')
+    expect(vip?.filters).toEqual(['vip = 1'])
+    // 基础实体的行级安全谓词被保留,双方都存在时加括号 AND
+    expect(vip?.rowFilter).toBe("(tenant = 1) AND (region = 'cn')")
+  })
+
+  it('继承的关系参与 joins 可达性:跨实体指标通过校验', () => {
+    const config = parseSemanticConfig(`${BASE}  - table: vip_users
+    extends: users
+    label: VIP 用户
+metrics:
+  - name: city_user_count
+    label: 按城市用户数
+    entity: vip_users
+    joins: [orders]
+    measure: id
+    agg: count_distinct
+    dimensions: [city]
+`)
+    expect(config.metrics?.[0]?.joins).toEqual(['orders'])
+  })
+
+  it('extends 未知实体 / 成环 → 直接报错', () => {
+    expect(() => parseSemanticConfig(`entities:
+  - table: a
+    extends: ghost
+`)).toThrow(SemanticConfigError)
+    expect(() => parseSemanticConfig(`entities:
+  - table: a
+    extends: b
+  - table: b
+    extends: a
+`)).toThrow(SemanticConfigError)
+  })
+})
+
+describe('lint 新规则: key / 关系列 / 枚举值域', () => {
+  it('key 指向未声明的列 → unknown-key-column', () => {
+    const found = codes(parseSemanticConfig(`entities:
+  - table: orders
+    key: order_id
+    columns:
+      - { name: id }
+`))
+    expect(found).toContain('unknown-key-column')
+  })
+
+  it('关系外键列未声明 → relationship-column-missing', () => {
+    const found = codes(parseSemanticConfig(`entities:
+  - table: orders
+    relationships:
+      - entity: users
+        on: [uid, id]
+    columns:
+      - { name: id }
+  - table: users
+    columns:
+      - { name: id }
+`))
+    expect(found).toContain('relationship-column-missing')
+  })
+
+  it('枚举列:filters 用未声明值告警,声明值通过;限定维度在 joins 下不误报', () => {
+    const config = parseSemanticConfig(`entities:
+  - table: orders
+    key: id
+    columns:
+      - { name: id }
+      - { name: status, values: [paid, refunded] }
+      - { name: city }
+      - { name: created_at }
+    relationships:
+      - entity: cities
+        on: [city, name]
+  - table: cities
+    columns:
+      - { name: name }
+metrics:
+  - name: bad_value
+    label: 坏值
+    entity: orders
+    agg: count
+    filters: ["status = 'payd'"]
+    timeField: created_at
+  - name: good_value
+    label: 好值
+    entity: orders
+    agg: count
+    filters: ["status = 'paid'"]
+    timeField: created_at
+  - name: by_city
+    label: 按城市
+    entity: orders
+    agg: count
+    joins: [cities]
+    dimensions: [cities.name]
+    timeField: created_at
+`)
+    const issues = lintSemanticConfig(config)
+    const bad = issues.filter((issue) => issue.code === 'enum-filter-value-unknown')
+    expect(bad).toHaveLength(1)
+    expect(bad[0]?.params).toMatchObject({ column: 'status', value: 'payd', entity: 'orders' })
+    // 声明值与限定维度都不产生告警
+    expect(issues.filter((issue) => issue.code === 'unknown-dimension-column')).toEqual([])
+    expect(issues.filter((issue) => issue.code === 'unknown-key-column')).toEqual([])
+  })
+})
