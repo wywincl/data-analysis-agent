@@ -1,21 +1,26 @@
 # Local development overlay: run from the deepseek-harness source checkout
 # with this plugin loaded straight from the built lib and a demo SQLite db.
+# Nothing here is machine-specific — substitute your own checkout locations
+# for the `/path/to/...` placeholders below.
 #
-#   cd /Users/wang.yang/Codes/Github/deepseek-harness
-#   pnpm dsh web --patch /Users/wang.yang/ZCodeProject/data-agent/dev/cordis.overlay.yml
+#   cd /path/to/deepseek-harness
+#   pnpm dsh web --patch /path/to/data-agent/dev/cordis.overlay.yml
 #
-# The row references the BUILT entry (node scripts/build.mjs first). Node
-# module resolution walks up from lib/index.js, so @deepseek-ai/* externals
-# resolve through data-agent/node_modules (scripts/link-dsh.mjs).
+# The row references the BUILT entry (run `npm run build` in the data-agent
+# checkout first). Node module resolution walks up from lib/index.js, so
+# @deepseek-ai/* externals resolve through data-agent/node_modules
+# (scripts/link-dsh.mjs). Relative sqlite `file` paths resolve against the
+# plugin package root; to point at a database elsewhere use an absolute path
+# or an env reference, e.g. `file: !!js process.env.DATA_AGENT_DEMO_DB`.
 
 - insert:
-    - id: data-analysis
-      name: '/Users/wang.yang/ZCodeProject/data-agent/lib/index.js'
+    - id: dsh-data-analysis
+      name: 'dsh-data-analysis-agent'
       config:
         dataSources:
           - name: demo
             type: sqlite
-            file: '/Users/wang.yang/ZCodeProject/data-agent/demo/demo.db'
+            file: './demo/demo.db'
             approvalMode: auto
           - name: spark-lake
             type: spark

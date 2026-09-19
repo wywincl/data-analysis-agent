@@ -5,5 +5,5 @@
 # Rows here can be overridden by later layers (profile / --patch) by id.
 
 - insert:
-    - id: data-analysis
-      name: dsh-data-analysis
+    - id: dsh-data-analysis
+      name: dsh-data-analysis-agent

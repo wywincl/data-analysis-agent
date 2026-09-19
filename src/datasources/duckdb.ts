@@ -13,6 +13,7 @@
  */
 
 import type { ColumnInfo, DataSourceProvider, QueryOptions, QueryResult, SchemaInfo, SqlDialect } from '../types.ts'
+import { resolvePluginFile } from './paths.ts'
 
 /** Infer a display type from a row value (duckdb reports types, but be safe). */
 function inferType(value: unknown): string {
@@ -54,6 +55,18 @@ async function loadDuckdb(): Promise<{ Database: new (path: string) => PromiseLi
   }
 }
 
+/** Bound any promise by a client-side timeout (the driver has no timeout param). */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  if (!Number.isFinite(ms) || ms <= 0) return promise
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms)}ms.`)), ms)
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value) },
+      (error) => { clearTimeout(timer); reject(error) },
+    )
+  })
+}
+
 export function createDuckdbProvider(name: string, file?: string): DataSourceProvider {
   const dialect: SqlDialect = 'sqlite'
   let dbPromise: Promise<DuckdbConnection> | undefined
@@ -62,13 +75,16 @@ export function createDuckdbProvider(name: string, file?: string): DataSourcePro
     if (dbPromise === undefined) {
       dbPromise = (async () => {
         const { Database } = await loadDuckdb()
-        const db = new Database(file && file.length > 0 ? file : ':memory:')
+        const db = new Database(file && file.length > 0 ? resolvePluginFile(file) : ':memory:')
         // duckdb-async Database resolves once the underlying connection opens.
         return (await db) as DuckdbConnection
       })()
     }
     return dbPromise
   }
+
+  /** Double-quote a table name coming from SHOW TABLES (introspection output). */
+  const quoteName = (tableName: string): string => `"${tableName.replace(/"/g, '')}"`
 
   return {
     name,
@@ -77,14 +93,14 @@ export function createDuckdbProvider(name: string, file?: string): DataSourcePro
     async query(sql: string, options: QueryOptions): Promise<QueryResult> {
       if (options.signal?.aborted) throw new Error('Query aborted before execution.')
       const db = await getDb()
-      const all = (await db.all(sql)) as Record<string, unknown>[]
+      const all = (await withTimeout(db.all(sql), options.timeoutMs, 'DuckDB query')) as Record<string, unknown>[]
       const hardCap = Math.max(1, options.maxRows)
       const truncated = all.length >= hardCap
       const rows = (all.length > hardCap ? all.slice(0, hardCap) : all) as Record<string, never>[]
       return { columns: columnsFromRows(all), rows, rowCount: all.length, truncated }
     },
 
-    async introspect(options: { readonly includeSamples?: boolean, readonly signal?: AbortSignal }): Promise<SchemaInfo> {
+    async introspect(options: { readonly includeSamples?: boolean, readonly signal?: AbortSignal } = {}): Promise<SchemaInfo> {
       const db = await getDb()
       let tableNames: string[] = []
       try {
@@ -94,20 +110,23 @@ export function createDuckdbProvider(name: string, file?: string): DataSourcePro
       } catch {
         tableNames = []
       }
-      const tables = await Promise.all(tableNames.map(async (tableName) => {
+      // Sequential on purpose: the single shared connection does not document
+      // concurrent all() semantics; table counts are small enough to iterate.
+      const tables: { name: string, type: 'table', columns: { name: string, dataType: string }[], samples?: Record<string, never>[] }[] = []
+      for (const tableName of tableNames) {
         let columns: { name: string, dataType: string }[] = []
         try {
-          const described = (await db.all(`DESCRIBE "${tableName}"`)) as { column_name?: string, column_type?: string, Field?: string, Type?: string }[]
+          const described = (await db.all(`DESCRIBE ${quoteName(tableName)}`)) as { column_name?: string, column_type?: string, Field?: string, Type?: string }[]
           columns = described.map((col) => ({
             name: String(col.column_name ?? col.Field ?? ''),
             dataType: String(col.column_type ?? col.Type ?? 'UNKNOWN'),
           })).filter((col) => col.name.length > 0)
         } catch { /* leave empty */ }
         const samples = options.includeSamples === true
-          ? (await db.all(`SELECT * FROM "${tableName}" LIMIT 5`)) as Record<string, never>[]
+          ? (await db.all(`SELECT * FROM ${quoteName(tableName)} LIMIT 5`)) as Record<string, never>[]
           : undefined
-        return { name: tableName, type: 'table' as const, columns, ...(samples !== undefined ? { samples } : {}) }
-      }))
+        tables.push({ name: tableName, type: 'table' as const, columns, ...(samples !== undefined ? { samples } : {}) })
+      }
       return { datasource: name, dialect, tables, truncated: false }
     },
 

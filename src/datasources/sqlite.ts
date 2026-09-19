@@ -14,6 +14,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import type { ColumnInfo, DataSourceProvider, QueryOptions, QueryResult, SchemaInfo, SqlDialect } from '../types.ts'
 import { quoteIdentifier } from '../sql/guard.ts'
+import { resolvePluginFile } from './paths.ts'
 
 interface SqliteColumn {
   readonly cid: number
@@ -33,7 +34,7 @@ function inferType(value: unknown): string {
 }
 
 export function createSqliteProvider(name: string, file: string): DataSourceProvider {
-  const db = new DatabaseSync(file)
+  const db = new DatabaseSync(resolvePluginFile(file))
   const dialect: SqlDialect = 'sqlite'
 
   function columnsFromRows(rows: readonly Record<string, unknown>[]): ColumnInfo[] {
@@ -58,7 +59,7 @@ export function createSqliteProvider(name: string, file: string): DataSourceProv
       return { columns: columnsFromRows(all), rows, rowCount: all.length, truncated }
     },
 
-    async introspect(options: { readonly includeSamples?: boolean, readonly signal?: AbortSignal }): Promise<SchemaInfo> {
+    async introspect(options: { readonly includeSamples?: boolean, readonly signal?: AbortSignal } = {}): Promise<SchemaInfo> {
       const tables = db.prepare(
         `SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name`,
       ).all() as { name: string, type: string }[]

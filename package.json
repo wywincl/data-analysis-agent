@@ -1,6 +1,6 @@
 {
-  "name": "dsh-data-agent",
-  "description": "Data Agent plugin for DeepSeek Harness: a database workbench with multi-datasource connectivity (SQLite/MySQL/PostgreSQL/ClickHouse/Spark), text2SQL guardrails, a hot-reloadable semantic layer, in-chat ECharts, and self-contained HTML export.",
+  "name": "dsh-data-analysis-agent",
+  "description": "Data Analysis Agent plugin for DeepSeek Harness: a database workbench with multi-datasource connectivity (SQLite/MySQL/PostgreSQL/ClickHouse/Spark), text2SQL guardrails, a hot-reloadable semantic layer, in-chat ECharts, and self-contained HTML export.",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",

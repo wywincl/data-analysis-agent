@@ -24,7 +24,7 @@ export interface DataSourceConfig {
   /** Registry key the model references in tools. */
   name: string
   type: 'sqlite' | 'mysql' | 'postgres' | 'clickhouse' | 'spark' | 'duckdb'
-  /** SQLite database file path (`type: 'sqlite'`). */
+  /** SQLite/duckdb database file path. Relative paths resolve against the plugin package root, so configs stay machine-independent. */
   file?: string
   /** mysql/postgres: host; clickhouse: HTTP base like `http://ck-prod`. */
   host?: string
@@ -36,6 +36,8 @@ export interface DataSourceConfig {
   database?: string
   /** SSL mode (postgres: `require` / `disable`, mysql: boolean-compatible). */
   ssl?: boolean
+  /** Skip the TLS certificate check (self-signed certs). Default: verify. */
+  sslSkipVerify?: boolean
   /** Ask for human approval before every query on this source. Default auto. */
   approvalMode?: ApprovalMode
   /** Per-source row cap; falls back to `defaultMaxRows`. */
@@ -136,7 +138,8 @@ export const Config: Schema<Config> = Schema.object({
       user: Schema.string().description('连接账号 | Account; prefer a read-only role'),
       password: Schema.string().role('secret').description('凭据建议经 !!js process.env.* 注入 | Inject via !!js process.env.*; leave blank in the card to keep the stored value'),
       database: Schema.string().description('库/schema 名 | Database/schema name (mysql/postgres/clickhouse)'),
-      ssl: Schema.boolean().default(false).description('启用 TLS | Enable TLS (mysql/postgres only)'),
+      ssl: Schema.boolean().default(false).description('启用 TLS | Enable TLS (mysql/postgres only; certificate is verified)'),
+      sslSkipVerify: Schema.boolean().default(false).description('跳过 TLS 证书校验(自签名证书时) | Skip the TLS certificate check (for self-signed certs)'),
       approvalMode: Schema.union(['auto', 'ask']).default('auto').description('auto 直接执行;ask 每条 SQL 触发人工审批 | auto executes directly; ask requires human approval per statement'),
       maxRows: Schema.number().description('本数据源单查询行上限 | Per-source row cap; falls back to global defaultMaxRows'),
       timeoutMs: Schema.number().description('本数据源语句超时(毫秒) | Per-source statement timeout in ms; falls back to defaultTimeoutMs'),
@@ -199,6 +202,7 @@ export function validateConfig(config: Config): void {
 
   const names = new Set<string>()
   for (const ds of config.dataSources) {
+    if (ds.name.trim() === '') throw new Error('data-analysis: datasource name must not be empty')
     if (names.has(ds.name)) throw new Error(`data-analysis: duplicate datasource name "${ds.name}"`)
     names.add(ds.name)
     if (ds.maxRows !== undefined && ds.maxRows < 1) {
@@ -219,6 +223,11 @@ export function validateConfig(config: Config): void {
   }
   if (config.defaultDatasource !== '' && !names.has(config.defaultDatasource)) {
     throw new Error(`data-analysis: ${tpl(s['config.validate.defaultDatasource'], { name: config.defaultDatasource, list: [...names].join(', ') || 'none' })}`)
+  }
+  if (config.locale !== 'zh' && config.locale !== 'en') {
+    // Unknown locales would silently fall back to zh everywhere — reject the
+    // typo instead of rendering a half-translated UI.
+    throw new Error(`data-analysis: locale must be "zh" or "en" (got "${config.locale}")`)
   }
 }
 

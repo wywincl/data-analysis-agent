@@ -7,12 +7,17 @@
  * the harness itself loads — never a bundled copy — so we symlink the scope
  * into our local node_modules from a deepseek-harness source checkout.
  *
- * Usage: node scripts/link-dsh.mjs [path-to-deepseek-harness-checkout]
+ * Usage:
+ *   node scripts/link-dsh.mjs [path-to-deepseek-harness-checkout]
+ *   DSH_CHECKOUT=/path/to/deepseek-harness npm run setup:links
+ *
+ * Without an argument or `DSH_CHECKOUT`, a few common checkout locations are
+ * probed; if none exists the script fails with instructions instead of
+ * guessing (no machine-specific paths live in this repository).
  */
 import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, lstatSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
-
-const DEFAULT_CHECKOUT = '/Users/wang.yang/Codes/Github/deepseek-harness'
 
 /** Package name → its directory inside the deepseek-harness checkout. */
 const LINKS = {
@@ -29,10 +34,20 @@ const LINKS = {
   '@deepseek-ai/dsh-client-ui-settings-plugins': 'packages/client/ui-settings-plugins',
 }
 
-const checkout = resolve(process.argv[2] ?? DEFAULT_CHECKOUT)
-if (!existsSync(join(checkout, 'package.json'))) {
-  console.error(`deepseek-harness checkout not found at ${checkout}`)
-  console.error('Usage: node scripts/link-dsh.mjs [path-to-deepseek-harness-checkout]')
+const home = homedir()
+const candidates = [
+  process.argv[2],
+  process.env.DSH_CHECKOUT,
+  join(home, 'Codes', 'Github', 'deepseek-harness'),
+  join(home, 'deepseek-harness'),
+  join(home, 'ZCodeProject', 'deepseek-harness'),
+].filter(Boolean)
+
+const checkout = candidates.map((p) => resolve(p)).find((p) => existsSync(join(p, 'package.json')))
+if (checkout === undefined) {
+  console.error('deepseek-harness checkout not found. Pass it explicitly, either:')
+  console.error('  node scripts/link-dsh.mjs /path/to/deepseek-harness')
+  console.error('  DSH_CHECKOUT=/path/to/deepseek-harness npm run setup:links')
   process.exit(1)
 }
 
