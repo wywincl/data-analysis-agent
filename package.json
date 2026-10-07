@@ -29,6 +29,7 @@
     }
   },
   "scripts": {
+    "prepare": "node scripts/build.mjs",
     "setup:links": "node scripts/link-dsh.mjs",
     "build": "node scripts/build.mjs",
     "watch": "node scripts/build.mjs --watch",

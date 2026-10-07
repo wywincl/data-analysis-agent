@@ -52,7 +52,7 @@ pnpm dsh web --patch /path/to/data-agent/dev/cordis.overlay.yml
 
 > 用 demo 数据源画一张每天 revenue 的趋势线，再看看各状态订单量占比
 
-overlay 里预置了 demo（SQLite）和 spark-lake（Mock）两个数据源，正式配置见[配置](#配置)一节。也可以把插件装进独立的 dsh profile 长期使用：`DSH_HOME=~/.dsh-rd pnpm dsh plugin --profile rd add <plugin-path>`。
+overlay 里预置了 demo（SQLite）和 spark-lake（Mock）两个数据源，正式配置见[配置](#配置)一节。也可以把插件装进独立的 dsh profile 长期使用：`DSH_HOME=~/.dsh-rd pnpm dsh plugin --profile rd add <plugin-path>`；从 GitHub 等远端安装时，构建靠 `prepare` 脚本在装包时触发，pnpm ≥10 默认拦截构建脚本，按 dsh 的提示把对应的 allowBuilds 条目加进 profile 的 `pnpm-workspace.yaml` 再重跑。
 
 ### 开发
 
