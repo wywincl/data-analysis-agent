@@ -20,7 +20,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { existsSync } from 'node:fs'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import * as dshSettings from '@deepseek-ai/dsh-settings'
 import { Config, PLUGIN_NAME, validateConfig, type Config as ConfigType } from './config.ts'
 import { DataSourceRegistry } from './registry.ts'
 import { createSqliteProvider } from './datasources/sqlite.ts'
@@ -79,8 +79,13 @@ function jsonOf(value: unknown): string {
 
 export { Config }
 
-/** Settings namespace backing the Web workbench card (连接管理). */
-export const SETTINGS_NS = settingsNamespace(PLUGIN_NAME)
+/** Settings namespace backing the Web workbench card (连接管理).
+ * dsh ≥0.2 removed `settingsNamespace`/`installSettingsSection` (settings are
+ * now projected from the plugin's Config schema), so the namespace falls back
+ * to the bare plugin name there and the workbench card is not installed. */
+export const SETTINGS_NS: ReturnType<typeof dshSettings.settingsNamespace> = typeof dshSettings.settingsNamespace === 'function'
+  ? dshSettings.settingsNamespace(PLUGIN_NAME)
+  : (PLUGIN_NAME as ReturnType<typeof dshSettings.settingsNamespace>)
 
 /** Instantiate the provider for one configured datasource. */
 function createProvider(ds: ConfigType['dataSources'][number]): import('./types.ts').DataSourceProvider {
@@ -183,12 +188,22 @@ export function apply(ctx: Context, config: ConfigType): void {
   /** Last serialized `semanticWorkbench` echoed back — guards the round-trip. */
   let lastWorkbenchJson = jsonOf(config.semanticWorkbench ?? null)
 
+  /** Fire-and-forget write into the workbench settings namespace. Only meaningful
+   * on dsh <0.2 (the section API); rc.2-style hosts have no configurable entry
+   * for this namespace and `update` rejects asynchronously, so skip entirely. */
+  const settingsWrite = (patch: Record<string, unknown>): void => {
+    if (typeof dshSettings.installSettingsSection !== 'function') return
+    try {
+      Promise.resolve(ctx.settings.update(SETTINGS_NS, patch)).catch(() => { /* settings layer already logged */ })
+    } catch { /* settings layer already logged */ }
+  }
+
   /** Build and push the read-only semantic preview to the card. */
   function pushSemanticSummary(): void {
     if (!settingsReady) return
     const locale: HostLocale = config.locale === 'en' ? 'en' : 'zh'
     const summary = buildSemanticSummary(semantic, locale)
-    try { ctx.settings.update(SETTINGS_NS, { semanticSummary: summary }) } catch { /* surface already logged */ }
+    settingsWrite({ semanticSummary: summary })
   }
 
   /** Resolve a live provider for a datasource (reuse wired, else build temp). */
@@ -251,14 +266,10 @@ export function apply(ctx: Context, config: ConfigType): void {
     config.semanticWorkbench = content
     lastWorkbenchJson = jsonOf(content)
     if (settingsReady) {
-      try {
-        ctx.settings.update(SETTINGS_NS, {
-          ...(rootChanged ? { semanticFile: wbPath } : {}),
-          semanticWorkbench: content,
-        })
-      } catch (error) {
-        // surface already logged by the settings layer
-      }
+      settingsWrite({
+        ...(rootChanged ? { semanticFile: wbPath } : {}),
+        semanticWorkbench: content,
+      })
     }
     pushSemanticSummary()
   }
@@ -319,7 +330,7 @@ export function apply(ctx: Context, config: ConfigType): void {
       if (temporary) await provider.close().catch(() => { /* best-effort close */ })
     }
     config.health = next
-    if (settingsReady) {
+    if (settingsReady && typeof dshSettings.installSettingsSection === 'function') {
       try { await ctx.settings.update(SETTINGS_NS, { health: next }) } catch { /* surface already logged via health */ }
     }
   }
@@ -354,7 +365,18 @@ export function apply(ctx: Context, config: ConfigType): void {
   // Writes hot-swap connections (providers rebuild) and rewire the semantic
   // layer file — everything else the closures already read live.
   let source: () => ConfigType = () => config
-  installSettingsSection(ctx, SETTINGS_NS, Config as unknown as Schema<ConfigType>, config, {
+  const seedOnce = (): void => {
+    if (seeded) return
+    seeded = true
+    settingsReady = true
+    void probeNames(wired.map((p) => p.name))
+    pushSemanticSummary()
+  }
+  // dsh <0.2 exposes the settings-section API the workbench card rides on;
+  // dsh ≥0.2 removed it (settings are projected from the Config schema and
+  // edits reload the entry), so the card is simply not installed there.
+  if (typeof dshSettings.installSettingsSection === 'function') {
+    dshSettings.installSettingsSection(ctx, SETTINGS_NS, Config as unknown as Schema<ConfigType>, config, {
     setSource: (get) => { source = get },
     onChange: () => {
       const next = source()
@@ -400,7 +422,7 @@ export function apply(ctx: Context, config: ConfigType): void {
       const scaffoldReq = merged.scaffoldRequest
       if (scaffoldReq !== null && scaffoldReq !== undefined && typeof scaffoldReq.nonce === 'number' && scaffoldReq.nonce !== lastScaffoldNonce) {
         lastScaffoldNonce = scaffoldReq.nonce
-        try { ctx.settings.update(SETTINGS_NS, { scaffoldRequest: null }) } catch { /* namespace not registered yet */ }
+        settingsWrite({ scaffoldRequest: null })
         if (config.dataSources.some((ds) => ds.name === scaffoldReq.datasource)) {
           void runScaffold(scaffoldReq.datasource)
         }
@@ -423,15 +445,14 @@ export function apply(ctx: Context, config: ConfigType): void {
       // this hook, so the `update` calls below are safe here. A synchronous
       // seed during `apply` would throw "namespace not registered" because the
       // registration is deferred until after `apply` returns.
-      if (!seeded) {
-        seeded = true
-        settingsReady = true
-        void probeNames(wired.map((p) => p.name))
-        pushSemanticSummary()
-      }
+      seedOnce()
     },
     validate: (value) => validateConfig(value),
   })
+  } else {
+    settingsReady = true
+    seedOnce()
+  }
 
   // The section text is evaluated at each assembly, so semantic-layer terms
   // and metrics stay current across hot reloads without a plugin reload.
